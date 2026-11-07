@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DemoBadge, StatusPill } from "@/components/brand";
-import { PageHeader } from "./route";
+import { PageHeader } from "@/components/page-header";
 import { analysesQuery } from "@/lib/queries";
 import { STAGES, stageIndex } from "@/lib/config";
 
