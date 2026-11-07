@@ -13,7 +13,9 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SignupRouteImport } from './routes/signup'
+import { Route as AuthenticatedAnalyseRouteImport } from './routes/_authenticated/analyse'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
+import { Route as AuthenticatedAnalysesIdRouteImport } from './routes/_authenticated/analyses.$id'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -34,9 +36,19 @@ const SignupRoute = SignupRouteImport.update({
   path: '/signup',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedAnalyseRoute = AuthenticatedAnalyseRouteImport.update({
+  id: '/analyse',
+  path: '/analyse',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedAnalysesIdRoute = AuthenticatedAnalysesIdRouteImport.update({
+  id: '/analyses/$id',
+  path: '/analyses/$id',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 
@@ -44,13 +56,17 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
+  '/analyse': typeof AuthenticatedAnalyseRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
+  '/analyses/$id': typeof AuthenticatedAnalysesIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
+  '/analyse': typeof AuthenticatedAnalyseRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
+  '/analyses/$id': typeof AuthenticatedAnalysesIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -58,20 +74,25 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
+  '/_authenticated/analyse': typeof AuthenticatedAnalyseRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
+  '/_authenticated/analyses/$id': typeof AuthenticatedAnalysesIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/signup' | '/dashboard'
+  fullPaths:
+    '/' | '/login' | '/signup' | '/analyse' | '/dashboard' | '/analyses/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/signup' | '/dashboard'
+  to: '/' | '/login' | '/signup' | '/analyse' | '/dashboard' | '/analyses/$id'
   id:
     | '__root__'
     | '/'
     | '/_authenticated'
     | '/login'
     | '/signup'
+    | '/_authenticated/analyse'
     | '/_authenticated/dashboard'
+    | '/_authenticated/analyses/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -111,6 +132,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SignupRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authenticated/analyse': {
+      id: '/_authenticated/analyse'
+      path: '/analyse'
+      fullPath: '/analyse'
+      preLoaderRoute: typeof AuthenticatedAnalyseRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/dashboard': {
       id: '/_authenticated/dashboard'
       path: '/dashboard'
@@ -118,15 +146,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedDashboardRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/analyses/$id': {
+      id: '/_authenticated/analyses/$id'
+      path: '/analyses/$id'
+      fullPath: '/analyses/$id'
+      preLoaderRoute: typeof AuthenticatedAnalysesIdRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
   }
 }
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedAnalyseRoute: typeof AuthenticatedAnalyseRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
+  AuthenticatedAnalysesIdRoute: typeof AuthenticatedAnalysesIdRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedAnalyseRoute: AuthenticatedAnalyseRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
+  AuthenticatedAnalysesIdRoute: AuthenticatedAnalysesIdRoute,
 }
 
 const AuthenticatedRouteRouteWithChildren =

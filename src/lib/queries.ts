@@ -14,19 +14,15 @@ export const analysesQuery = () =>
     },
   });
 
+async function fetchAnalysis(id: string) {
+  const { data, error } = await supabase.from("analyses").select("*,companies(*)").eq("id", id).single();
+  if (error) throw error;
+  return data;
+}
+export type AnalysisRow = Awaited<ReturnType<typeof fetchAnalysis>>;
+
 export const analysisQuery = (id: string) =>
-  queryOptions({
-    queryKey: ["analysis", id],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("analyses")
-        .select("*,companies(*)")
-        .eq("id", id)
-        .single();
-      if (error) throw error;
-      return data;
-    },
-  });
+  queryOptions({ queryKey: ["analysis", id], queryFn: () => fetchAnalysis(id) });
 
 export const documentsQuery = (analysisId: string) =>
   queryOptions({

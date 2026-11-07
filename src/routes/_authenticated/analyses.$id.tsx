@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusPill } from "@/components/brand";
-import { analysisQuery, documentsQuery } from "@/lib/queries";
+import { analysisQuery, documentsQuery, type AnalysisRow } from "@/lib/queries";
 import { STAGES, STATEMENT_TYPES, fyLabel, stageIndex } from "@/lib/config";
 
 export const Route = createFileRoute("/_authenticated/analyses/$id")({
@@ -104,7 +104,7 @@ function Pending({ title, need, detail }: { title: string; need: string; detail:
   );
 }
 
-type Analysis = NonNullable<Awaited<ReturnType<ReturnType<typeof analysisQuery>["queryFn"] & {}>>>;
+type Analysis = AnalysisRow;
 
 function UploadPanel({ analysis }: { analysis: Analysis }) {
   const qc = useQueryClient();
