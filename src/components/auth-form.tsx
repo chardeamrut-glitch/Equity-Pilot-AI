@@ -47,7 +47,10 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
 
   async function google() {
     const result = await lovable.auth.signInWithOAuth("google", { redirect_uri: window.location.origin + "/login" });
-    if (result.error) return toast.error(result.error.message);
+    if (result.error) {
+      toast.error(result.error.message);
+      return;
+    }
     if (result.redirected) return;
     navigate({ to: "/dashboard" });
   }

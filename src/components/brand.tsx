@@ -30,7 +30,7 @@ export function StatusPill({ status }: { status: string }) {
   };
   return (
     <span
-      className={`inline-flex items-center rounded-sm border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider ${map[status] ?? map.pending}`}
+      className={`inline-flex items-center rounded-sm border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider ${map[status] ?? map["pending"]}`}
     >
       {status.replace("_", " ")}
     </span>

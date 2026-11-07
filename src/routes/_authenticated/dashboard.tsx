@@ -25,7 +25,7 @@ function Dashboard() {
     <div className="mx-auto max-w-6xl">
       <PageHeader
         eyebrow="Workspace"
-        title={`Welcome${user.user_metadata?.full_name ? ", " + String(user.user_metadata.full_name).split(" ")[0] : ""}`}
+        title={`Welcome${user.user_metadata?.["full_name"] ? ", " + String(user.user_metadata["full_name"]).split(" ")[0] : ""}`}
         desc="Start a new company analysis or continue where you left off."
         action={<Button asChild variant="navy"><Link to="/analyse"><Plus /> New analysis</Link></Button>}
       />
