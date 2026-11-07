@@ -12,6 +12,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { PageHeader } from "@/components/page-header";
 import { addCompany, createAnalysis, searchCompanies } from "@/lib/api.functions";
 import { lastFiveFYs } from "@/lib/config";
+import { readFinancialWorkbook } from "@/lib/excel-import";
+import { analyzeFinancials } from "@/lib/financial-analysis";
+import type {
+  FinancialYear,
+  FinancialAnalysisResult,
+} from "@/lib/financial-analysis";
 
 export const Route = createFileRoute("/_authenticated/analyse")({
   head: () => ({ meta: [{ title: "Analyse a company — EquityPilot AI" }, { name: "description", content: "Search NSE and BSE listed companies." }] }),
@@ -42,6 +48,43 @@ function Analyse() {
   const fys = lastFiveFYs();
   const [showAdd, setShowAdd] = useState(false);
   const [newCo, setNewCo] = useState({ name: "", nseSymbol: "", bseCode: "", exchange: "NSE" as "NSE" | "BSE" | "BOTH" });
+  
+const [financialData, setFinancialData] = useState<FinancialYear[]>([]);
+const [financialResults, setFinancialResults] =
+  useState<FinancialAnalysisResult[]>([]);
+const [uploadingExcel, setUploadingExcel] = useState(false);
+const [uploadedFileName, setUploadedFileName] = useState("");
+
+
+const handleExcelUpload = async (file?: File) => {
+  if (!file) return;
+
+  setUploadingExcel(true);
+  setFinancialData([]);
+  setFinancialResults([]);
+  setUploadedFileName("");
+
+  try {
+    const data = await readFinancialWorkbook(file);
+    const analysis = analyzeFinancials(data);
+
+    setFinancialData(data);
+    setFinancialResults(analysis);
+    setUploadedFileName(file.name);
+
+    toast.success(
+      `Successfully analysed ${data.length} financial years`
+    );
+  } catch (error) {
+    toast.error(
+      error instanceof Error
+        ? error.message
+        : "Unable to analyse Excel file"
+    );
+  } finally {
+    setUploadingExcel(false);
+  }
+};
 
   const results = useQuery({
     queryKey: ["company-search", dq],
@@ -164,6 +207,134 @@ function Analyse() {
               <div className="flex h-9 items-center rounded-md border bg-muted px-3 font-mono text-sm">FY{fys[4]} – FY{fys[0]}</div>
             </div>
           </div>
+          
+<div className="mt-6 border-t pt-5">
+  <h3 className="text-base font-semibold">
+    Import five-year financial statements
+  </h3>
+
+  <p className="mt-1 text-sm text-muted-foreground">
+    Upload a standardized Excel workbook to calculate
+    financial ratios and review company performance.
+  </p>
+
+  <div className="mt-4 rounded-lg border border-dashed p-5">
+    <div className="flex flex-col gap-3">
+      <Label htmlFor="financial-excel">
+        Financial statements (.xlsx or .xls)
+      </Label>
+
+      <Input
+        id="financial-excel"
+        type="file"
+        accept=".xlsx,.xls"
+        disabled={uploadingExcel}
+        onChange={(e) => {
+          const file = e.currentTarget.files?.[0];
+          void handleExcelUpload(file);
+          e.currentTarget.value = "";
+        }}
+      />
+
+      <p className="text-xs text-muted-foreground">
+        Maximum file size: 10 MB. Use the standardized
+        EquityPilot Excel column format.
+      </p>
+    </div>
+  </div>
+
+  {uploadingExcel && (
+    <div className="mt-4 flex items-center gap-2 text-sm">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      Processing financial statements...
+    </div>
+  )}
+
+  {uploadedFileName && (
+    <div className="mt-4 rounded-md bg-muted p-3 text-sm">
+      <div className="flex items-center gap-2 font-medium">
+        <Check className="h-4 w-4 text-green-600" />
+        Excel successfully processed
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {uploadedFileName} · {financialData.length} financial years
+      </p>
+    </div>
+  )}
+
+  {financialResults.length > 0 && (
+    <div className="mt-5">
+      <h3 className="text-sm font-semibold">
+        Financial analysis preview
+      </h3>
+
+      <div className="mt-3 overflow-x-auto rounded-md border">
+        <table className="w-full text-left text-xs">
+          <thead className="bg-muted">
+            <tr>
+              <th className="p-3">Year</th>
+              <th className="p-3">Revenue growth</th>
+              <th className="p-3">EBITDA margin</th>
+              <th className="p-3">Net margin</th>
+              <th className="p-3">ROE</th>
+              <th className="p-3">ROCE</th>
+              <th className="p-3">Debt/Equity</th>
+              <th className="p-3">Free cash flow</th>
+            </tr>
+          </thead>
+
+          <tbody className="divide-y">
+            {financialResults.map((item) => {
+              const format = (value: number | null) =>
+                value === null
+                  ? "N/A"
+                  : `${value.toFixed(2)}%`;
+
+              return (
+                <tr key={item.year}>
+                  <td className="p-3 font-medium">
+                    {item.year}
+                  </td>
+                  <td className="p-3">
+                    {format(item.revenueGrowth)}
+                  </td>
+                  <td className="p-3">
+                    {format(item.ebitdaMargin)}
+                  </td>
+                  <td className="p-3">
+                    {format(item.netProfitMargin)}
+                  </td>
+                  <td className="p-3">
+                    {format(item.roe)}
+                  </td>
+                  <td className="p-3">
+                    {format(item.roce)}
+                  </td>
+                  <td className="p-3">
+                    {item.debtToEquity === null
+                      ? "N/A"
+                      : item.debtToEquity.toFixed(2) + "x"}
+                  </td>
+                  <td className="p-3">
+                    {item.freeCashFlow.toLocaleString("en-IN", {
+                      maximumFractionDigits: 2,
+                    })}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="mt-2 text-xs text-muted-foreground">
+        Financial figures use the uploaded workbook's units.
+        Percentages and ratios are calculated from the supplied data.
+      </p>
+    </div>
+  )}
+</div>
+
           <Button variant="navy" className="mt-5" onClick={() => createM.mutate()} disabled={createM.isPending}>
             {createM.isPending && <Loader2 className="animate-spin" />} Confirm & continue to upload
           </Button>
