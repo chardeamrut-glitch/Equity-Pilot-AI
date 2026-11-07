@@ -70,7 +70,7 @@ function Landing() {
             </div>
             <div className="flex h-40 items-end gap-3 px-6 pb-4 pt-6">
               {[38, 46, 52, 63, 74].map((h, i) => (
-                <div key={i} className="flex flex-1 flex-col items-center gap-1">
+                <div key={i} className="flex h-full flex-1 flex-col items-center justify-end gap-1">
                   <div className="w-full rounded-sm bg-primary/20" style={{ height: `${h}%` }} />
                   <span className="font-mono text-[10px] text-muted-foreground">FY{21 + i}</span>
                 </div>
