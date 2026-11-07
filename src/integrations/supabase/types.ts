@@ -348,10 +348,18 @@ export type Database = {
           created_at: string
           document_id: string | null
           fiscal_year: number
+          flags: string[]
           id: string
+          is_user_corrected: boolean
           metric_key: string
+          normalized_value: number | null
+          original_value: number | null
           page_ref: string | null
           raw_label: string | null
+          review_status: string
+          reviewed_at: string | null
+          source_unit: string | null
+          statement: string
           value: number | null
         }
         Insert: {
@@ -360,10 +368,18 @@ export type Database = {
           created_at?: string
           document_id?: string | null
           fiscal_year: number
+          flags?: string[]
           id?: string
+          is_user_corrected?: boolean
           metric_key: string
+          normalized_value?: number | null
+          original_value?: number | null
           page_ref?: string | null
           raw_label?: string | null
+          review_status?: string
+          reviewed_at?: string | null
+          source_unit?: string | null
+          statement?: string
           value?: number | null
         }
         Update: {
@@ -372,10 +388,18 @@ export type Database = {
           created_at?: string
           document_id?: string | null
           fiscal_year?: number
+          flags?: string[]
           id?: string
+          is_user_corrected?: boolean
           metric_key?: string
+          normalized_value?: number | null
+          original_value?: number | null
           page_ref?: string | null
           raw_label?: string | null
+          review_status?: string
+          reviewed_at?: string | null
+          source_unit?: string | null
+          statement?: string
           value?: number | null
         }
         Relationships: [
@@ -750,12 +774,19 @@ export type Database = {
         Row: {
           analysis_id: string
           created_at: string
+          detected_basis: Database["public"]["Enums"]["reporting_basis"] | null
+          detected_currency: string | null
+          detected_fiscal_years: number[]
+          detected_units: string | null
+          extracted_at: string | null
           extraction_error: string | null
+          extraction_method: string | null
           extraction_status: Database["public"]["Enums"]["processing_status"]
           file_name: string
           fiscal_year: number
           id: string
           mime_type: string | null
+          page_count: number | null
           reporting_basis: Database["public"]["Enums"]["reporting_basis"]
           size_bytes: number | null
           statement_type: Database["public"]["Enums"]["statement_type"]
@@ -765,12 +796,19 @@ export type Database = {
         Insert: {
           analysis_id: string
           created_at?: string
+          detected_basis?: Database["public"]["Enums"]["reporting_basis"] | null
+          detected_currency?: string | null
+          detected_fiscal_years?: number[]
+          detected_units?: string | null
+          extracted_at?: string | null
           extraction_error?: string | null
+          extraction_method?: string | null
           extraction_status?: Database["public"]["Enums"]["processing_status"]
           file_name: string
           fiscal_year: number
           id?: string
           mime_type?: string | null
+          page_count?: number | null
           reporting_basis: Database["public"]["Enums"]["reporting_basis"]
           size_bytes?: number | null
           statement_type: Database["public"]["Enums"]["statement_type"]
@@ -780,12 +818,19 @@ export type Database = {
         Update: {
           analysis_id?: string
           created_at?: string
+          detected_basis?: Database["public"]["Enums"]["reporting_basis"] | null
+          detected_currency?: string | null
+          detected_fiscal_years?: number[]
+          detected_units?: string | null
+          extracted_at?: string | null
           extraction_error?: string | null
+          extraction_method?: string | null
           extraction_status?: Database["public"]["Enums"]["processing_status"]
           file_name?: string
           fiscal_year?: number
           id?: string
           mime_type?: string | null
+          page_count?: number | null
           reporting_basis?: Database["public"]["Enums"]["reporting_basis"]
           size_bytes?: number | null
           statement_type?: Database["public"]["Enums"]["statement_type"]
