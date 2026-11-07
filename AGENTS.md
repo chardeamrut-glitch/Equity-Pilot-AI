@@ -28,3 +28,11 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+## Project rules
+- Server logic uses TanStack `createServerFn` in `src/lib/*.functions.ts` with `requireSupabaseAuth`; no Python service can run in this stack, so financial engines are TypeScript server functions.
+- Signed-in pages live under `src/routes/_authenticated/` (client-only gate redirecting to `/login`).
+- Every analysis-child table carries `analysis_id` and uses RLS via `owns_analysis` / `can_read_analysis`; keep new child tables on that pattern.
+- Uploaded files go to private bucket `financial-documents` under `<user_id>/<analysis_id>/...` (storage RLS checks the first folder).
+- Financial calculations stay deterministic and separate from AI-generated text; never seed or invent financial figures or market prices.
+- Branding (name, tagline) is read from `src/lib/config.ts`.
