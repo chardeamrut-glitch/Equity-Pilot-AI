@@ -127,7 +127,7 @@ export const reviewMetric = createServerFn({ method: "POST" })
     const { data: row, error } = await sb.from("extracted_financial_metrics").select("*, analyses(units, stage)").eq("id", data.id).single();
     if (error || !row) throw new Error("Value not found");
     const now = new Date().toISOString();
-    let patch: Record<string, unknown>;
+    let patch: import("@/integrations/supabase/types").Database["public"]["Tables"]["extracted_financial_metrics"]["Update"];
     if (data.action === "confirm") patch = { review_status: "confirmed", reviewed_at: now };
     else if (data.action === "reject") patch = { review_status: "rejected", reviewed_at: now };
     else if (data.action === "reset") {

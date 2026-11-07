@@ -79,7 +79,7 @@ export function ReviewPanel({ analysis }: { analysis: { id: string; units: strin
   const approveM = useMutation({
     mutationFn: () => approve({ data: { analysisId: analysis.id } }),
     onSuccess: (r) => {
-      if (!r.ok) return toast.error(r.error);
+      if (!r.ok) { toast.error(r.error); return; }
       toast.success(`Approved ${r.years} financial years`);
       refresh();
       qc.invalidateQueries({ queryKey: ["analyses"] });
@@ -205,7 +205,7 @@ export function ReviewPanel({ analysis }: { analysis: { id: string; units: strin
             <DialogTitle>{open && `${METRICS.find((d) => d.key === open.key)?.label} · FY${open.fy}`}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
-            {openRows.map((r) => <CandidateRow key={r.id} r={r} units={analysis.units} busy={reviewM.isPending} onAction={(action, value) => reviewM.mutate({ id: r.id, action, value })} />)}
+            {openRows.map((r) => <CandidateRow key={r.id} r={r} units={analysis.units} busy={reviewM.isPending} onAction={(action, value) => reviewM.mutate(value === undefined ? { id: r.id, action } : { id: r.id, action, value })} />)}
           </div>
         </DialogContent>
       </Dialog>
@@ -237,7 +237,7 @@ function CandidateRow({ r, units, busy, onAction }: { r: Row; units: string; bus
         <Input value={val} onChange={(e) => setVal(e.target.value)} className="h-8 w-40 font-mono" inputMode="decimal" aria-label="Corrected value" />
         <Button size="sm" variant="outline" disabled={busy} onClick={() => {
           const n = Number(val.replace(/,/g, ""));
-          if (!val.trim() || !Number.isFinite(n)) return toast.error("Enter a number");
+          if (!val.trim() || !Number.isFinite(n)) { toast.error("Enter a number"); return; }
           onAction("correct", n);
         }}>Save correction</Button>
         <Button size="sm" disabled={busy || r.review_status === "confirmed"} onClick={() => onAction("confirm")}>Confirm</Button>
