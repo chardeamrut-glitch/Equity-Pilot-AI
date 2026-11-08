@@ -1,3 +1,4 @@
+import { pageMeta } from "@/lib/page-meta";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, FileText, Plus } from "lucide-react";
@@ -10,7 +11,7 @@ import { analysesQuery } from "@/lib/queries";
 import { STAGES, stageIndex } from "@/lib/config";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
-  head: () => ({ meta: [{ title: "Dashboard — EquityPilot AI" }, { name: "description", content: "Your equity research workspace." }] }),
+  head: () => pageMeta("Dashboard", "Your equity research workspace."),
   component: Dashboard,
 });
 

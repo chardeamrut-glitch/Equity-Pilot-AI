@@ -1,3 +1,4 @@
+import { pageMeta } from "@/lib/page-meta";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Card } from "@/components/ui/card";
@@ -9,7 +10,7 @@ import { analysesQuery } from "@/lib/queries";
 import { STAGES, stageIndex } from "@/lib/config";
 
 export const Route = createFileRoute("/_authenticated/history")({
-  head: () => ({ meta: [{ title: "Analysis history — EquityPilot AI" }, { name: "description", content: "All your company analyses." }] }),
+  head: () => pageMeta("Analysis history", "All your company analyses."),
   component: History,
 });
 

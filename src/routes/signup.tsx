@@ -10,6 +10,8 @@ export const Route = createFileRoute("/signup")({
   },
   head: () => ({
     meta: [
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
       { title: "Create account — EquityPilot AI" },
       { name: "description", content: "Create a free EquityPilot AI account to analyse Indian listed companies." },
       { property: "og:title", content: "Create account — EquityPilot AI" },

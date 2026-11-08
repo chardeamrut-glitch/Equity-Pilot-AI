@@ -1,3 +1,4 @@
+import { pageMeta } from "@/lib/page-meta";
 import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -11,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { PageHeader } from "@/components/page-header";
 
 export const Route = createFileRoute("/_authenticated/settings")({
-  head: () => ({ meta: [{ title: "Settings — EquityPilot AI" }, { name: "description", content: "Manage your profile." }] }),
+  head: () => pageMeta("Settings", "Manage your profile."),
   component: SettingsPage,
 });
 

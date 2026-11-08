@@ -36,3 +36,4 @@ use the editor.
 - Uploaded files go to private bucket `financial-documents` under `<user_id>/<analysis_id>/...` (storage RLS checks the first folder).
 - Financial calculations stay deterministic and separate from AI-generated text; never seed or invent financial figures or market prices.
 - Branding (name, tagline) is read from `src/lib/config.ts`.
+- The analysis workspace invokes authenticated extraction through `useServerFn` and refreshes document, metric, and workflow queries together so review always reflects the latest extraction.
