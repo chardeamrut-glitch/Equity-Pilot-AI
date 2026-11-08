@@ -54,7 +54,7 @@ export function ReviewPanel({ analysis }: { analysis: { id: string; units: strin
 
   const years = useMemo(() => {
     const ys: number[] = [];
-    for (let y = analysis.end_fy!; y >= analysis.start_fy!; y--) ys.push(y);
+    for (let y = analysis.end_fy ?? 0; y >= (analysis.start_fy ?? 1); y--) ys.push(y);
     return ys;
   }, [analysis.start_fy, analysis.end_fy]);
 
@@ -173,14 +173,14 @@ export function ReviewPanel({ analysis }: { analysis: { id: string; units: strin
                         const tone = conflict ? "bg-destructive/10 text-destructive" : needs ? "bg-warning/15" : corrected ? "bg-accent text-accent-foreground" : "";
                         return (
                           <td key={y} className="p-0 text-right">
-                            <button
-                              className={`w-full px-3 py-1.5 text-right font-mono tabular-nums hover:ring-1 hover:ring-primary ${tone} ${!all.length ? "text-muted-foreground/50" : ""}`}
+                            <Button variant="ghost"
+                              className={`h-auto w-full justify-end rounded-none px-3 py-1.5 text-right font-mono tabular-nums hover:ring-1 hover:ring-primary ${tone} ${!all.length ? "text-muted-foreground/50" : ""}`}
                               onClick={() => all.length && setOpen({ fy: y, key: d.key })}
                               aria-label={`${d.label} FY${y}`}
                             >
                               {shown ? fmt(shown.normalized_value) : "—"}
                               {conflict && " ⚠"}
-                            </button>
+                            </Button>
                           </td>
                         );
                       })}
