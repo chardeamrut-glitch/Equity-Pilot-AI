@@ -1,4 +1,5 @@
 # Extraction workflow
-- [ ] Connect per-document extraction, status/error display, and review tables to the analysis workspace.
+- [x] Connect per-document extraction, status/error display, and review tables to the analysis workspace.
 - [ ] Verify authenticated upload → extraction → correction → validation for CSV, XLSX, and text PDF samples.
-- [ ] Run existing extraction tests and resolve observed failures.
+- [x] Run existing extraction tests and resolve observed failures (24 checks pass).
+- [ ] Retrieve the user's GitHub work — waiting for repository link and desired destination.
