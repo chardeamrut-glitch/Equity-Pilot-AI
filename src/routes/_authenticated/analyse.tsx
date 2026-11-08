@@ -1,3 +1,4 @@
+import { pageMeta } from "@/lib/page-meta";
 import { useEffect, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
@@ -20,7 +21,7 @@ import type {
 } from "@/lib/financial-analysis";
 
 export const Route = createFileRoute("/_authenticated/analyse")({
-  head: () => ({ meta: [{ title: "Analyse a company — EquityPilot AI" }, { name: "description", content: "Search NSE and BSE listed companies." }] }),
+  head: () => pageMeta("Analyse a company", "Search NSE and BSE listed companies."),
   component: Analyse,
 });
 

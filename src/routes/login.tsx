@@ -10,6 +10,8 @@ export const Route = createFileRoute("/login")({
   },
   head: () => ({
     meta: [
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
       { title: "Sign in — EquityPilot AI" },
       { name: "description", content: "Sign in to your EquityPilot AI equity research workspace." },
       { property: "og:title", content: "Sign in — EquityPilot AI" },

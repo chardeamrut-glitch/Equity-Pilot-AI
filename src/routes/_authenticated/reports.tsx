@@ -1,10 +1,11 @@
+import { pageMeta } from "@/lib/page-meta";
 import { createFileRoute } from "@tanstack/react-router";
 import { FileSpreadsheet, FileText, Presentation } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/page-header";
 
 export const Route = createFileRoute("/_authenticated/reports")({
-  head: () => ({ meta: [{ title: "Download reports — EquityPilot AI" }, { name: "description", content: "Download pitch decks, Excel models and PDF reports." }] }),
+  head: () => pageMeta("Download reports", "Download pitch decks, Excel models and PDF reports."),
   component: Reports,
 });
 

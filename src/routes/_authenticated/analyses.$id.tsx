@@ -1,3 +1,4 @@
+import { pageMeta } from "@/lib/page-meta";
 import { useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { createFileRoute, Link } from "@tanstack/react-router";
@@ -17,7 +18,7 @@ import { analysisQuery, documentsQuery, type AnalysisRow } from "@/lib/queries";
 import { STAGES, STATEMENT_TYPES, fyLabel, stageIndex } from "@/lib/config";
 
 export const Route = createFileRoute("/_authenticated/analyses/$id")({
-  head: () => ({ meta: [{ title: "Analysis workspace — EquityPilot AI" }, { name: "description", content: "Upload statements and track analysis progress." }] }),
+  head: () => pageMeta("Analysis workspace", "Upload statements and track analysis progress."),
   component: AnalysisPage,
 });
 
