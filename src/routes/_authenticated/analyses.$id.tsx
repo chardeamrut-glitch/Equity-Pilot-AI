@@ -48,7 +48,7 @@ function AnalysisPage() {
         <StatusPill status={a.status} />
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[260px_1fr]">
+      <div className="grid min-w-0 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
         <Card className="h-fit p-4">
           <div className="eyebrow mb-3">Workflow</div>
           <ol className="space-y-1">
@@ -67,7 +67,7 @@ function AnalysisPage() {
           </ol>
         </Card>
 
-        <Tabs defaultValue="upload">
+        <Tabs defaultValue="upload" className="min-w-0">
           <TabsList className="flex-wrap h-auto">
             <TabsTrigger value="upload">Upload</TabsTrigger>
             <TabsTrigger value="validation">Data validation</TabsTrigger>
