@@ -1,0 +1,9 @@
+{
+  "source": "https://github.com/chardeamrut-glitch/Equity-Pilot-AI",
+  "capabilities": [
+    {"capability":"code and assets","source":"public GitHub snapshot 64ef6b4","outcome":"already present; every non-secret repository file matches the current project","status":"verified","next_action":null},
+    {"capability":"schema, records, auth, authorization, storage","source":"existing Lovable Cloud app","outcome":"preserved in place; no external migration required","status":"preserved","next_action":null},
+    {"capability":"providers, public endpoints, callbacks, schedules, secrets, cutover","source":"identical repository","outcome":"no changes required for import; secret files and repository metadata not copied","status":"preserved","next_action":null},
+    {"capability":"extraction review verification","source":"ongoing workspace testing","outcome":"CSV, XLSX and PDF extraction checked; review verification continuing","status":"pending","next_action":"verify correction and validation through signed-in UI"}
+  ]
+}
