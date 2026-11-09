@@ -1,18 +1,18 @@
 
 export interface FinancialYear {
   year: string;
-  revenue: number;
-  ebitda: number;
-  ebit: number;
-  netProfit: number;
-  totalDebt: number;
-  totalEquity: number;
-  currentAssets: number;
-  currentLiabilities: number;
-  operatingCashFlow: number;
-  capex: number;
-  averageEquity?: number;
-  averageCapitalEmployed?: number;
+  revenue?: number | null;
+  ebitda?: number | null;
+  ebit?: number | null;
+  netProfit?: number | null;
+  totalDebt?: number | null;
+  totalEquity?: number | null;
+  currentAssets?: number | null;
+  currentLiabilities?: number | null;
+  operatingCashFlow?: number | null;
+  capex?: number | null;
+  averageEquity?: number | null;
+  averageCapitalEmployed?: number | null;
 }
 
 export interface FinancialAnalysisResult {
@@ -21,21 +21,79 @@ export interface FinancialAnalysisResult {
   ebitdaGrowth: number | null;
   profitGrowth: number | null;
   ebitdaMargin: number | null;
+  ebitMargin: number | null;
   netProfitMargin: number | null;
   roe: number | null;
   roce: number | null;
   debtToEquity: number | null;
   currentRatio: number | null;
-  freeCashFlow: number;
+  freeCashFlow: number | null;
+}
+
+export interface StoredFinancialPeriod {
+  fiscal_year: number;
+  reporting_basis: string;
+  units: string;
+  currency: string;
+  validation_status: string;
+}
+
+export interface StoredFinancialStatements {
+  period: StoredFinancialPeriod;
+  incomeStatement: Pick<FinancialYear, "revenue" | "ebitda" | "ebit" | "netProfit"> | null;
+  balanceSheet: Pick<FinancialYear, "totalDebt" | "totalEquity"> | null;
+  cashFlow: Pick<FinancialYear, "operatingCashFlow" | "capex"> | null;
+}
+
+export function financialYearsFromStatements(
+  statements: StoredFinancialStatements[],
+  reportingBasis: string,
+  units: string,
+): FinancialYear[] {
+  const years = new Set<number>();
+  const sorted = [...statements].sort((a, b) => a.period.fiscal_year - b.period.fiscal_year);
+
+  return sorted.map(({ period, incomeStatement, balanceSheet, cashFlow }) => {
+    if (
+      period.reporting_basis !== reportingBasis ||
+      period.units !== units ||
+      period.currency !== "INR"
+    ) {
+      throw new Error("Stored statement basis, currency, or units do not match this analysis.");
+    }
+    if (period.validation_status !== "completed") {
+      throw new Error(`FY${period.fiscal_year} has not passed financial data validation.`);
+    }
+    if (years.has(period.fiscal_year)) {
+      throw new Error(`Duplicate financial period FY${period.fiscal_year}.`);
+    }
+    years.add(period.fiscal_year);
+
+    return {
+      year: String(period.fiscal_year),
+      revenue: incomeStatement?.revenue ?? null,
+      ebitda: incomeStatement?.ebitda ?? null,
+      ebit: incomeStatement?.ebit ?? null,
+      netProfit: incomeStatement?.netProfit ?? null,
+      totalDebt: balanceSheet?.totalDebt ?? null,
+      totalEquity: balanceSheet?.totalEquity ?? null,
+      operatingCashFlow: cashFlow?.operatingCashFlow ?? null,
+      capex: cashFlow?.capex ?? null,
+    };
+  });
 }
 
 function safeDivide(
-  numerator: number,
-  denominator: number
+  numerator: number | null | undefined,
+  denominator: number | null | undefined,
 ): number | null {
-  if (!Number.isFinite(numerator) ||
-      !Number.isFinite(denominator) ||
-      denominator === 0) {
+  if (
+    numerator == null ||
+    denominator == null ||
+    !Number.isFinite(numerator) ||
+    !Number.isFinite(denominator) ||
+    denominator === 0
+  ) {
     return null;
   }
 
@@ -43,10 +101,12 @@ function safeDivide(
 }
 
 function growthRate(
-  current: number,
-  previous: number | undefined
+  current: number | null | undefined,
+  previous: number | null | undefined,
 ): number | null {
   if (
+    current == null ||
+    previous == null ||
     previous === undefined ||
     previous <= 0 ||
     !Number.isFinite(current)
@@ -58,34 +118,14 @@ function growthRate(
 }
 
 function validateYear(data: FinancialYear): void {
-  const numericFields: (keyof FinancialYear)[] = [
-    "revenue",
-    "ebitda",
-    "ebit",
-    "netProfit",
-    "totalDebt",
-    "totalEquity",
-    "currentAssets",
-    "currentLiabilities",
-    "operatingCashFlow",
-    "capex",
-  ];
-
-  for (const field of numericFields) {
-    const value = data[field];
-
-    if (
-      typeof value !== "number" ||
-      !Number.isFinite(value)
-    ) {
-      throw new Error(
-        `Invalid or missing ${field} for ${data.year}`
-      );
-    }
+  if (!data.year?.trim()) {
+    throw new Error("Financial year is required.");
   }
 
-  if (!data.year.trim()) {
-    throw new Error("Financial year is required.");
+  for (const [field, value] of Object.entries(data)) {
+    if (value != null && field !== "year" && !Number.isFinite(value)) {
+      throw new Error(`Invalid ${field} for ${data.year}`);
+    }
   }
 }
 
@@ -119,9 +159,10 @@ export function analyzeFinancials(
   return sorted.map((current, index) => {
     const previous = sorted[index - 1];
 
-    const capitalEmployed =
-      current.averageCapitalEmployed ??
-      current.totalDebt + current.totalEquity;
+    const capitalEmployed = current.averageCapitalEmployed ??
+      (current.totalDebt != null && current.totalEquity != null
+        ? current.totalDebt + current.totalEquity
+        : null);
 
     const equityForRoe =
       current.averageEquity ?? current.totalEquity;
@@ -145,22 +186,27 @@ export function analyzeFinancials(
       ),
 
       ebitdaMargin: safeDivide(
-        current.ebitda * 100,
+        current.ebitda == null ? null : current.ebitda * 100,
         current.revenue
       ),
 
+      ebitMargin: safeDivide(
+        current.ebit == null ? null : current.ebit * 100,
+        current.revenue,
+      ),
+
       netProfitMargin: safeDivide(
-        current.netProfit * 100,
+        current.netProfit == null ? null : current.netProfit * 100,
         current.revenue
       ),
 
       roe: safeDivide(
-        current.netProfit * 100,
+        current.netProfit == null ? null : current.netProfit * 100,
         equityForRoe
       ),
 
       roce: safeDivide(
-        current.ebit * 100,
+        current.ebit == null ? null : current.ebit * 100,
         capitalEmployed
       ),
 
@@ -174,9 +220,9 @@ export function analyzeFinancials(
         current.currentLiabilities
       ),
 
-      freeCashFlow:
-        current.operatingCashFlow -
-        Math.abs(current.capex),
+      freeCashFlow: current.operatingCashFlow == null || current.capex == null
+        ? null
+        : current.operatingCashFlow - Math.abs(current.capex),
     };
   });
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -12,12 +12,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { PageHeader } from "@/components/page-header";
 import { addCompany, createAnalysis, searchCompanies } from "@/lib/api.functions";
 import { lastFiveFYs } from "@/lib/config";
-import { readFinancialWorkbook } from "@/lib/excel-import";
+import {
+  FINANCIAL_YEAR_FIELDS,
+  readFinancialWorkbook,
+  validateFinancialWorkbook,
+  type FinancialWorkbook,
+  type FinancialYearDraft,
+} from "@/lib/excel-import";
 import { analyzeFinancials } from "@/lib/financial-analysis";
-import type {
-  FinancialYear,
-  FinancialAnalysisResult,
-} from "@/lib/financial-analysis";
+import type { Unit } from "@/lib/financial-metrics";
 
 export const Route = createFileRoute("/_authenticated/analyse")({
   head: () => ({ meta: [{ title: "Analyse a company — EquityPilot AI" }, { name: "description", content: "Search NSE and BSE listed companies." }] }),
@@ -49,32 +52,39 @@ function Analyse() {
   const [showAdd, setShowAdd] = useState(false);
   const [newCo, setNewCo] = useState({ name: "", nseSymbol: "", bseCode: "", exchange: "NSE" as "NSE" | "BSE" | "BOTH" });
   
-const [financialData, setFinancialData] = useState<FinancialYear[]>([]);
-const [financialResults, setFinancialResults] =
-  useState<FinancialAnalysisResult[]>([]);
+const [financialWorkbook, setFinancialWorkbook] = useState<FinancialWorkbook | null>(null);
+const [financialRows, setFinancialRows] = useState<FinancialYearDraft[]>([]);
 const [uploadingExcel, setUploadingExcel] = useState(false);
 const [uploadedFileName, setUploadedFileName] = useState("");
 
+const validation = useMemo(
+  () => financialWorkbook
+    ? validateFinancialWorkbook(financialWorkbook, financialRows, units as Unit)
+    : null,
+  [financialWorkbook, financialRows, units],
+);
+const financialResults = useMemo(
+  () => validation?.financialYears
+    ? analyzeFinancials(validation.financialYears)
+    : [],
+  [validation],
+);
+const validationErrors = validation?.issues.filter((issue) => issue.severity === "error") ?? [];
 
 const handleExcelUpload = async (file?: File) => {
   if (!file) return;
 
   setUploadingExcel(true);
-  setFinancialData([]);
-  setFinancialResults([]);
+  setFinancialWorkbook(null);
+  setFinancialRows([]);
   setUploadedFileName("");
 
   try {
-    const data = await readFinancialWorkbook(file);
-    const analysis = analyzeFinancials(data);
-
-    setFinancialData(data);
-    setFinancialResults(analysis);
+    const imported = await readFinancialWorkbook(file);
+    setFinancialWorkbook(imported);
+    setFinancialRows(imported.rows);
     setUploadedFileName(file.name);
-
-    toast.success(
-      `Successfully analysed ${data.length} financial years`
-    );
+    toast.success("Excel workbook imported. Review the validation results.");
   } catch (error) {
     toast.error(
       error instanceof Error
@@ -84,6 +94,12 @@ const handleExcelUpload = async (file?: File) => {
   } finally {
     setUploadingExcel(false);
   }
+};
+
+const updateFinancialCell = (rowIndex: number, field: keyof FinancialYearDraft, value: string) => {
+  setFinancialRows((current) =>
+    current.map((row, index) => index === rowIndex ? { ...row, [field]: value } : row),
+  );
 };
 
   const results = useQuery({
@@ -214,8 +230,8 @@ const handleExcelUpload = async (file?: File) => {
   </h3>
 
   <p className="mt-1 text-sm text-muted-foreground">
-    Upload a standardized Excel workbook to calculate
-    financial ratios and review company performance.
+    Upload a standardized Excel workbook to validate and review
+    the figures before calculating financial ratios.
   </p>
 
   <div className="mt-4 rounded-lg border border-dashed p-5">
@@ -238,7 +254,7 @@ const handleExcelUpload = async (file?: File) => {
 
       <p className="text-xs text-muted-foreground">
         Maximum file size: 10 MB. Use the standardized
-        EquityPilot Excel column format.
+        EquityPilot Excel column format. Empty values stay blank; they are never treated as zero.
       </p>
     </div>
   </div>
@@ -254,11 +270,86 @@ const handleExcelUpload = async (file?: File) => {
     <div className="mt-4 rounded-md bg-muted p-3 text-sm">
       <div className="flex items-center gap-2 font-medium">
         <Check className="h-4 w-4 text-green-600" />
-        Excel successfully processed
+        Excel imported: {uploadedFileName}
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        {uploadedFileName} · {financialData.length} financial years
+        {financialRows.length} financial years · Reporting unit: ₹ {units}
       </p>
+    </div>
+  )}
+
+  {validation && (
+    <div className="mt-4 rounded-md border p-4">
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        <span className={validationErrors.length ? "font-semibold text-destructive" : "font-semibold text-green-700"}>
+          {validationErrors.length
+            ? `${validationErrors.length} critical validation issue${validationErrors.length === 1 ? "" : "s"}`
+            : "Critical validation checks passed"}
+        </span>
+        <span className="text-muted-foreground">
+          {validation.issues.filter((issue) => issue.severity === "warning").length} warning(s)
+        </span>
+        {!validationErrors.length && (
+          <span className="text-xs text-green-700">Financial analysis is available.</span>
+        )}
+      </div>
+      {!!validation.issues.length && (
+        <ul className="mt-3 space-y-1.5 text-xs">
+          {validation.issues.map((issue, index) => (
+            <li
+              key={`${issue.rule_key}-${issue.rowIndex ?? "all"}-${issue.field ?? ""}-${index}`}
+              className={issue.severity === "error" ? "text-destructive" : "text-muted-foreground"}
+            >
+              {issue.message}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )}
+
+  {financialWorkbook && (
+    <div className="mt-5">
+      <h3 className="text-sm font-semibold">Editable financial data preview</h3>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Correct or fill the highlighted cells. Validation updates as you edit.
+      </p>
+      <div className="mt-3 overflow-x-auto rounded-md border">
+        <table className="w-full min-w-[1100px] text-left text-xs">
+          <thead className="bg-muted">
+            <tr>
+              {FINANCIAL_YEAR_FIELDS.map(({ key, label }) => (
+                <th key={key} className="p-2 font-medium">{label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {financialRows.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                {FINANCIAL_YEAR_FIELDS.map(({ key, label }) => {
+                  const issue = validation?.issues.find(
+                    (item) => item.rowIndex === rowIndex && item.field === key && item.severity === "error",
+                  );
+                  return (
+                    <td key={key} className="p-1">
+                      <Input
+                        type="text"
+                        inputMode={key === "year" ? "text" : "decimal"}
+                        aria-label={`Row ${rowIndex + 1} ${label}`}
+                        aria-invalid={!!issue}
+                        title={issue?.message}
+                        value={row[key]}
+                        onChange={(event) => updateFinancialCell(rowIndex, key, event.target.value)}
+                        className={`h-8 min-w-24 text-xs ${issue ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                      />
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )}
 
@@ -275,6 +366,7 @@ const handleExcelUpload = async (file?: File) => {
               <th className="p-3">Year</th>
               <th className="p-3">Revenue growth</th>
               <th className="p-3">EBITDA margin</th>
+              <th className="p-3">EBIT margin</th>
               <th className="p-3">Net margin</th>
               <th className="p-3">ROE</th>
               <th className="p-3">ROCE</th>
@@ -302,6 +394,9 @@ const handleExcelUpload = async (file?: File) => {
                     {format(item.ebitdaMargin)}
                   </td>
                   <td className="p-3">
+                    {format(item.ebitMargin)}
+                  </td>
+                  <td className="p-3">
                     {format(item.netProfitMargin)}
                   </td>
                   <td className="p-3">
@@ -316,9 +411,9 @@ const handleExcelUpload = async (file?: File) => {
                       : item.debtToEquity.toFixed(2) + "x"}
                   </td>
                   <td className="p-3">
-                    {item.freeCashFlow.toLocaleString("en-IN", {
-                      maximumFractionDigits: 2,
-                    })}
+                    {item.freeCashFlow === null
+                      ? "N/A"
+                      : item.freeCashFlow.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
                   </td>
                 </tr>
               );
@@ -328,7 +423,7 @@ const handleExcelUpload = async (file?: File) => {
       </div>
 
       <p className="mt-2 text-xs text-muted-foreground">
-        Financial figures use the uploaded workbook's units.
+        Financial figures use ₹ {units}.
         Percentages and ratios are calculated from the supplied data.
       </p>
     </div>
