@@ -1,6 +1,6 @@
-
 import * as XLSX from "xlsx";
 import type { FinancialYear } from "./financial-analysis";
+import { financialFields, normalizeReportingUnit, validateWorkbook, type PreviewRow, type WorkbookPreview } from "./excel-validation";
 
 const ALIASES: Record<string, keyof FinancialYear> = {
   year: "year",
@@ -38,174 +38,51 @@ const ALIASES: Record<string, keyof FinancialYear> = {
   averagecapitalemployed: "averageCapitalEmployed",
 };
 
-const REQUIRED_FIELDS = [
-  "year",
-  "revenue",
-  "ebitda",
-  "ebit",
-  "netProfit",
-  "totalDebt",
-  "totalEquity",
-  "currentAssets",
-  "currentLiabilities",
-  "operatingCashFlow",
-  "capex",
-];
-
-function normalizeHeader(header: string): string {
-  return header.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function parseNumber(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error("A required financial value is missing.");
-  }
-
-  let cleaned = value.trim().replace(/[₹$€£,\s]/g, "");
-  const isNegative = cleaned.startsWith("(") && cleaned.endsWith(")");
-
-  if (isNegative) {
-    cleaned = cleaned.slice(1, -1);
-  }
-
-  const number = Number(cleaned);
-
-  if (!Number.isFinite(number)) {
-    throw new Error(`Invalid financial number: ${value}`);
-  }
-
-  return isNegative ? -number : number;
-}
-
-export async function readFinancialWorkbook(
-  file: File
-): Promise<FinancialYear[]> {
-  const extension = file.name.split(".").pop()?.toLowerCase();
-
-  if (!["xlsx", "xls"].includes(extension || "")) {
-    throw new Error("Please upload an XLSX or XLS file.");
-  }
-
-  if (file.size > 10 * 1024 * 1024) {
-    throw new Error("Maximum file size is 10 MB.");
-  }
-
-  const buffer = await file.arrayBuffer();
-  const workbook = XLSX.read(buffer, { type: "array" });
-
-  const sheetName = workbook.SheetNames[0];
-
-  if (!sheetName) {
-    throw new Error("No worksheet found.");
-  }
-
-  const sheet = workbook.Sheets[sheetName];
-  if (!sheet) {
-  throw new Error("Unable to read the selected worksheet.");
-}
-
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(
-    sheet,
-    { defval: "" }
-  );
-
-  if (rows.length < 2 || rows.length > 5) {
-    throw new Error(
-      "Please provide between 2 and 5 financial years."
-    );
-  }
-
-
-const firstRow = rows[0];
-
-if (!firstRow) {
-  throw new Error("No financial data found in the worksheet.");
-}
-
-const headers = Object.keys(firstRow);
-const fieldMap = new Map<string, string>();
-
-
-  for (const header of headers) {
-    const field = ALIASES[normalizeHeader(header)];
-
+export async function readFinancialWorkbookPreview(file: File): Promise<WorkbookPreview> {
+  if (!/\.xlsx?$/i.test(file.name)) throw new Error("Please upload an XLSX or XLS file.");
+  if (file.size > 10 * 1024 * 1024) throw new Error("Maximum file size is 10 MB.");
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const name = workbook.SheetNames[0];
+  const sheet = name ? workbook.Sheets[name] : undefined;
+  if (!sheet) throw new Error("No worksheet found.");
+  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", blankrows: false });
+  const headers = matrix[0]?.map(value => String(value ?? "")) ?? [];
+  const mapping = new Map<string, number>();
+  const headerUnits: string[] = [];
+  headers.forEach((header, index) => {
+    const suffix = /\(([^)]+)\)\s*$/.exec(header);
+    const unit = suffix ? normalizeReportingUnit(suffix[1]) : null;
+    if (unit) headerUnits.push(unit);
+    const base = unit ? header.replace(/\([^)]+\)\s*$/, "") : header;
+    const key = base.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const field = ["units", "reportingunits", "unit"].includes(key) ? "units" : ALIASES[key];
     if (field) {
-      if (fieldMap.has(field)) {
-        throw new Error(`Duplicate column detected: ${field}`);
-      }
-      fieldMap.set(field, header);
-    }
-  }
-
-  const missing = REQUIRED_FIELDS.filter(
-    field => !fieldMap.has(field)
-  );
-
-  if (missing.length) {
-    throw new Error(
-      `Missing Excel columns: ${missing.join(", ")}`
-    );
-  }
-
-  const results: FinancialYear[] = rows.map((row, index) => {
-    try {
-      const get = (field: keyof FinancialYear) => {
-        const header = fieldMap.get(field);
-        return header ? row[header] : undefined;
-      };
-
-      const yearValue = get("year");
-
-      if (yearValue === undefined || yearValue === "") {
-        throw new Error("Financial year is missing.");
-      }
-
-      const year = String(yearValue).trim();
-
-      const result: FinancialYear = {
-        year,
-        revenue: parseNumber(get("revenue")),
-        ebitda: parseNumber(get("ebitda")),
-        ebit: parseNumber(get("ebit")),
-        netProfit: parseNumber(get("netProfit")),
-        totalDebt: parseNumber(get("totalDebt")),
-        totalEquity: parseNumber(get("totalEquity")),
-        currentAssets: parseNumber(get("currentAssets")),
-        currentLiabilities: parseNumber(get("currentLiabilities")),
-        operatingCashFlow: parseNumber(get("operatingCashFlow")),
-        capex: parseNumber(get("capex")),
-      };
-
-      const averageEquity = get("averageEquity");
-      const averageCapital = get("averageCapitalEmployed");
-
-      if (averageEquity !== undefined && averageEquity !== "") {
-        result.averageEquity = parseNumber(averageEquity);
-      }
-
-      if (averageCapital !== undefined && averageCapital !== "") {
-        result.averageCapitalEmployed = parseNumber(averageCapital);
-      }
-
-      return result;
-    } catch (error) {
-      const message = error instanceof Error
-        ? error.message
-        : "Invalid data";
-
-      throw new Error(`Excel row ${index + 2}: ${message}`);
+      if (mapping.has(field)) throw new Error(`Duplicate column detected: ${field}`);
+      mapping.set(field, index);
     }
   });
+  const rows = matrix.slice(1).map(values => {
+    const get = (field: string) => {
+      const index = mapping.get(field);
+      return index === undefined ? "" : String(values[index] ?? "");
+    };
+    return Object.fromEntries([["year", get("year")], ["units", get("units") || (new Set(headerUnits).size === 1 ? headerUnits[0] : "")], ...financialFields.map(field => [field, get(field)])]) as PreviewRow;
+  });
+  if (!rows.length) throw new Error("No financial data found in the worksheet.");
+  return {
+    rows,
+    missingColumns: ["year", ...financialFields.slice(0, 10)].filter(field => !mapping.has(field)),
+    headerUnits: [...new Set(headerUnits)],
+    warnings: workbook.SheetNames.length > 1 ? [`Only worksheet “${name}” was imported; other worksheets were not combined.`] : [],
+  };
+}
 
-  const years = new Set(results.map(row => row.year));
-
-  if (years.size !== results.length) {
-    throw new Error("Duplicate financial years detected.");
-  }
-
-  return results;
+export async function readFinancialWorkbook(file: File): Promise<FinancialYear[]> {
+  const preview = await readFinancialWorkbookPreview(file);
+  const expectedUnit = normalizeReportingUnit(preview.rows[0]?.units ?? "");
+  if (!expectedUnit) throw new Error("Reporting units are required.");
+  const result = validateWorkbook(preview, expectedUnit);
+  const errors = result.issues.filter(issue => issue.severity === "error");
+  if (errors.length) throw new Error(errors.map(issue => issue.message).join("\n"));
+  return result.data;
 }
