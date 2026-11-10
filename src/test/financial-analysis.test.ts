@@ -88,4 +88,29 @@ describe("financial analysis", () => {
     expect(year?.ebitda).toBeNull();
     expect(year?.totalDebt).toBeNull();
   });
+
+  it("preserves imported balance sheet inputs for liquidity and return calculations", () => {
+    const years = financialYearsFromStatements(
+      [2023, 2024].map((fiscal_year) => ({
+        period: period(fiscal_year),
+        incomeStatement: { revenue: 100, ebitda: 25, ebit: 20, netProfit: 15 },
+        balanceSheet: {
+          totalDebt: 10,
+          totalEquity: 50,
+          currentAssets: 30,
+          currentLiabilities: 10,
+          averageEquity: 60,
+          averageCapitalEmployed: 80,
+        },
+        cashFlow: { operatingCashFlow: 12, capex: 3 },
+      })),
+      "consolidated",
+      "crore",
+    );
+    const latest = analyzeFinancials(years)[1]!;
+
+    expect(latest.currentRatio).toBe(3);
+    expect(latest.roe).toBe(25);
+    expect(latest.roce).toBe(25);
+  });
 });

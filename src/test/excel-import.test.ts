@@ -2,6 +2,7 @@ import * as XLSX from "xlsx";
 import { describe, expect, it } from "vitest";
 import {
   readFinancialWorkbook,
+  validateImportedFinancialYears,
   validateFinancialWorkbook,
   type FinancialWorkbook,
   type FinancialYearDraft,
@@ -91,6 +92,54 @@ describe("Excel financial data import and validation", () => {
     expect(resolved.financialYears).not.toBeNull();
     if (!resolved.financialYears) throw new Error("Expected valid financial years");
     expect(analyzeFinancials(resolved.financialYears)).toHaveLength(2);
+  });
+
+  it("revalidates imported financial years and preserves optional values and missing fields", () => {
+    const result = validateImportedFinancialYears(
+      [
+        {
+          year: "2023",
+          revenue: 100,
+          ebitda: 20,
+          ebit: 15,
+          netProfit: 10,
+          totalDebt: 5,
+          totalEquity: 40,
+          currentAssets: 25,
+          currentLiabilities: 10,
+          operatingCashFlow: 12,
+          capex: 3,
+          averageEquity: 30,
+          averageCapitalEmployed: null,
+        },
+        {
+          year: "2024",
+          revenue: 110,
+          ebitda: 22,
+          ebit: 16,
+          netProfit: 11,
+          totalDebt: 4,
+          totalEquity: 42,
+          currentAssets: 26,
+          currentLiabilities: 11,
+          operatingCashFlow: 13,
+          capex: 4,
+        },
+      ],
+      ["crore"],
+      [],
+      "crore",
+    );
+
+    expect(result.financialYears?.[0]).toMatchObject({
+      year: "2023",
+      currentAssets: 25,
+      currentLiabilities: 10,
+      averageEquity: 30,
+    });
+    expect(result.financialYears?.[0]?.averageCapitalEmployed).toBeUndefined();
+    expect(result.financialYears?.[1]?.averageEquity).toBeUndefined();
+    expect(result.issues.some((issue) => issue.severity === "error")).toBe(false);
   });
 
   it("allows explicit zero and parses parenthesized negative values", () => {

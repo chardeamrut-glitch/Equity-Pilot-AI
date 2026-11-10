@@ -41,7 +41,10 @@ export interface StoredFinancialPeriod {
 export interface StoredFinancialStatements {
   period: StoredFinancialPeriod;
   incomeStatement: Pick<FinancialYear, "revenue" | "ebitda" | "ebit" | "netProfit"> | null;
-  balanceSheet: Pick<FinancialYear, "totalDebt" | "totalEquity"> | null;
+  balanceSheet: Pick<
+    FinancialYear,
+    "totalDebt" | "totalEquity" | "currentAssets" | "currentLiabilities" | "averageEquity" | "averageCapitalEmployed"
+  > | null;
   cashFlow: Pick<FinancialYear, "operatingCashFlow" | "capex"> | null;
 }
 
@@ -77,6 +80,10 @@ export function financialYearsFromStatements(
       netProfit: incomeStatement?.netProfit ?? null,
       totalDebt: balanceSheet?.totalDebt ?? null,
       totalEquity: balanceSheet?.totalEquity ?? null,
+      currentAssets: balanceSheet?.currentAssets ?? null,
+      currentLiabilities: balanceSheet?.currentLiabilities ?? null,
+      averageEquity: balanceSheet?.averageEquity ?? null,
+      averageCapitalEmployed: balanceSheet?.averageCapitalEmployed ?? null,
       operatingCashFlow: cashFlow?.operatingCashFlow ?? null,
       capex: cashFlow?.capex ?? null,
     };

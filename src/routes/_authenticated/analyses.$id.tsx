@@ -17,6 +17,7 @@ import { extractDocument } from "@/lib/extraction.functions";
 import { ReviewPanel } from "@/components/review-panel";
 import {
   analyzeFinancials,
+  calculateCAGR,
   financialYearsFromStatements,
   type StoredFinancialStatements,
 } from "@/lib/financial-analysis";
@@ -25,7 +26,7 @@ import { CartesianGrid, Legend, Line, LineChart, Tooltip, XAxis, YAxis } from "r
 
 export const Route = createFileRoute("/_authenticated/analyses/$id")({
   validateSearch: (search: Record<string, unknown>) => ({
-    tab: search.tab === "analysis" ? "analysis" as const : undefined,
+    ...(search["tab"] === "analysis" ? { tab: "analysis" as const } : {}),
   }),
   head: () => ({ meta: [{ title: "Analysis workspace — EquityPilot AI" }, { name: "description", content: "Upload statements and track analysis progress." }] }),
   component: AnalysisPage,
@@ -132,7 +133,7 @@ function FinancialAnalysisPanel({ analysis }: { analysis: AnalysisRow }) {
           .eq("analysis_id", analysis.id)
           .in("period_id", periodIds),
         supabase.from("balance_sheets")
-          .select("period_id,total_debt,total_equity")
+          .select("period_id,total_debt,total_equity,current_assets,current_liabilities,average_equity,average_capital_employed")
           .eq("analysis_id", analysis.id)
           .in("period_id", periodIds),
         supabase.from("cash_flow_statements")
@@ -163,6 +164,10 @@ function FinancialAnalysisPanel({ analysis }: { analysis: AnalysisRow }) {
           balanceSheet: balanceRow ? {
             totalDebt: balanceRow.total_debt,
             totalEquity: balanceRow.total_equity,
+            currentAssets: balanceRow.current_assets,
+            currentLiabilities: balanceRow.current_liabilities,
+            averageEquity: balanceRow.average_equity,
+            averageCapitalEmployed: balanceRow.average_capital_employed,
           } : null,
           cashFlow: cashFlowRow ? {
             operatingCashFlow: cashFlowRow.cash_from_operations,
@@ -203,6 +208,15 @@ function FinancialAnalysisPanel({ analysis }: { analysis: AnalysisRow }) {
     value == null || !Number.isFinite(value)
       ? "N/A"
       : `₹ ${value.toLocaleString("en-IN", { maximumFractionDigits: 2 })} ${analysis.units}`;
+  const latestFinancialYear = statements.data?.at(-1);
+  const fiveYearRevenueStart = latestFinancialYear
+    ? statements.data?.find((year) => Number(year.year) === Number(latestFinancialYear.year) - 5)
+    : undefined;
+  const revenueCagr =
+    typeof fiveYearRevenueStart?.revenue === "number" &&
+    typeof latestFinancialYear?.revenue === "number"
+      ? calculateCAGR(fiveYearRevenueStart.revenue, latestFinancialYear.revenue, 5)
+      : null;
 
   if (!validationReady) {
     return (
@@ -232,6 +246,25 @@ function FinancialAnalysisPanel({ analysis }: { analysis: AnalysisRow }) {
           {analysis.reporting_basis} statements · INR, ₹ {analysis.units}. Ratios are calculated deterministically from approved statement values.
         </p>
       </Card>
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <Card className="p-5">
+          <div className="eyebrow">Revenue · FY{latestFinancialYear?.year ?? "—"}</div>
+          <div className="mt-2 font-mono text-xl font-medium">{fmtAmount(latestFinancialYear?.revenue)}</div>
+        </Card>
+        <Card className="p-5">
+          <div className="eyebrow">EBITDA · FY{latestFinancialYear?.year ?? "—"}</div>
+          <div className="mt-2 font-mono text-xl font-medium">{fmtAmount(latestFinancialYear?.ebitda)}</div>
+        </Card>
+        <Card className="p-5">
+          <div className="eyebrow">Net profit · FY{latestFinancialYear?.year ?? "—"}</div>
+          <div className="mt-2 font-mono text-xl font-medium">{fmtAmount(latestFinancialYear?.netProfit)}</div>
+        </Card>
+        <Card className="p-5">
+          <div className="eyebrow">Five-year Revenue CAGR</div>
+          <div className="mt-2 font-mono text-xl font-medium">{fmt(revenueCagr)}</div>
+        </Card>
+      </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Card className="p-5">

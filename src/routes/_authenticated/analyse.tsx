@@ -110,8 +110,30 @@ const updateFinancialCell = (rowIndex: number, field: keyof FinancialYearDraft, 
 
   const createM = useMutation({
     mutationFn: () =>
-      create({ data: { companyId: selected!.id, reportingBasis: basis, units, startFy: fys[4], endFy: fys[0] } }),
-    onSuccess: (r) => navigate({ to: "/analyses/$id", params: { id: r.id } }),
+      create({
+        data: {
+          companyId: selected!.id,
+          reportingBasis: basis,
+          units,
+          startFy: fys[4],
+          endFy: fys[0],
+          ...(validation?.financialYears && financialWorkbook
+            ? {
+                excelData: {
+                  financialYears: validation.financialYears,
+                  declaredUnits: financialWorkbook.declaredUnits,
+                  duplicateColumns: financialWorkbook.duplicateColumns,
+                },
+              }
+            : {}),
+        },
+      }),
+    onSuccess: (r) =>
+      navigate({
+        to: "/analyses/$id",
+        params: { id: r.id },
+        search: validation?.financialYears ? { tab: "analysis" } : {},
+      }),
     onError: (e) => toast.error((e as Error).message),
   });
 
@@ -430,8 +452,14 @@ const updateFinancialCell = (rowIndex: number, field: keyof FinancialYearDraft, 
   )}
 </div>
 
-          <Button variant="navy" className="mt-5" onClick={() => createM.mutate()} disabled={createM.isPending}>
-            {createM.isPending && <Loader2 className="animate-spin" />} Confirm & continue to upload
+          <Button
+            variant="navy"
+            className="mt-5"
+            onClick={() => createM.mutate()}
+            disabled={createM.isPending || (!!financialWorkbook && !validation?.financialYears)}
+          >
+            {createM.isPending && <Loader2 className="animate-spin" />}
+            {validation?.financialYears ? "Confirm & view financial analysis" : "Confirm & continue to upload"}
           </Button>
         </Card>
       )}

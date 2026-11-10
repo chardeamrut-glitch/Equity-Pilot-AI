@@ -320,3 +320,29 @@ export function validateFinancialWorkbook(
     financialYears: !hasErrors && financialYears.length === rows.length ? financialYears : null,
   };
 }
+
+export function validateImportedFinancialYears(
+  financialYears: FinancialYear[],
+  declaredUnits: Unit[],
+  duplicateColumns: FinancialField[],
+  analysisUnit: Unit,
+): FinancialWorkbookValidation {
+  const rows = financialYears.map((year) =>
+    Object.fromEntries(
+      FINANCIAL_YEAR_FIELDS.map(({ key }) => [
+        key,
+        key === "year"
+          ? year.year
+          : year[key] == null
+            ? ""
+            : String(year[key]),
+      ]),
+    ) as FinancialYearDraft,
+  );
+
+  return validateFinancialWorkbook(
+    { rows: [], declaredUnits, missingColumns: [], duplicateColumns },
+    rows,
+    analysisUnit,
+  );
+}

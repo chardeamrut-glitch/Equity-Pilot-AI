@@ -76,8 +76,12 @@ export type Database = {
       balance_sheets: {
         Row: {
           analysis_id: string
+          average_capital_employed: number | null
+          average_equity: number | null
           cash_and_equivalents: number | null
           created_at: string
+          current_assets: number | null
+          current_liabilities: number | null
           cwip: number | null
           fixed_assets: number | null
           id: string
@@ -103,8 +107,12 @@ export type Database = {
         }
         Insert: {
           analysis_id: string
+          average_capital_employed?: number | null
+          average_equity?: number | null
           cash_and_equivalents?: number | null
           created_at?: string
+          current_assets?: number | null
+          current_liabilities?: number | null
           cwip?: number | null
           fixed_assets?: number | null
           id?: string
@@ -130,8 +138,12 @@ export type Database = {
         }
         Update: {
           analysis_id?: string
+          average_capital_employed?: number | null
+          average_equity?: number | null
           cash_and_equivalents?: number | null
           created_at?: string
+          current_assets?: number | null
+          current_liabilities?: number | null
           cwip?: number | null
           fixed_assets?: number | null
           id?: string
