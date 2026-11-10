@@ -11,6 +11,7 @@ import {
 
 export interface RawItem {
   metric_key: string;
+  statement?: Statement | "unrecognized";
   raw_label: string;
   fiscal_year: number;
   value: number;
@@ -19,12 +20,13 @@ export interface RawItem {
   flags: string[];
 }
 export interface ParseResult {
-  method: "spreadsheet" | "pdf_ai" | "spreadsheet_ai";
+  method: "spreadsheet" | "pdf_text" | "pdf_ai" | "spreadsheet_ai";
   units: Unit | null;
   currency: string | null;
   basis: "consolidated" | "standalone" | null;
   pageCount: number | null;
   items: RawItem[];
+  warnings?: string[];
 }
 
 export class ExtractionError extends Error {}
@@ -106,6 +108,109 @@ export function selectStatementPages(pages: string[], maxChars = 90_000) {
   return picked.sort((a, b) => a.i - b.i);
 }
 
+const FISCAL_YEAR_TOKEN =
+  /\b(?:FY\s*['’]?\d{2,4}(?:\s*[-–/]\s*\d{2,4})?|\d{4}\s*[-–/]\s*\d{2,4}|\d{1,2}(?:st|nd|rd|th)?\s+[a-z]{3,9}\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+\d{4}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|(?:19|20)\d{2})\b/gi;
+const FINANCIAL_TOKEN =
+  /\(\s*\d[\d,]*(?:\.\d+)?\s*\)|(?<![\p{L}\d])[-−]?\d[\d,]*(?:\.\d+)?|—|–|nil|n\/a/giu;
+
+function fiscalYearsInLine(line: string): number[] {
+  const years: number[] = [];
+  for (const match of line.matchAll(FISCAL_YEAR_TOKEN)) {
+    const year = parseFiscalYear(match[0]);
+    if (year != null && !years.includes(year)) years.push(year);
+  }
+  return years;
+}
+
+function numericTokens(line: string): { start: number; value: number | null }[] {
+  return [...line.matchAll(FINANCIAL_TOKEN)].map((match) => ({
+    start: match.index ?? 0,
+    value: parseIndianNumber(match[0]),
+  }));
+}
+
+function lineLabel(line: string, numbers: { start: number; value: number | null }[]) {
+  for (const number of numbers) {
+    const label = line.slice(0, number.start).trim().replace(/^[\s|:;.,-]+|[\s|:;.,-]+$/g, "");
+    if (/[a-z]{3}/i.test(label)) return { label, start: number.start };
+  }
+  return null;
+}
+
+/** Conservatively maps text-layer PDF rows; ambiguous year/value alignment is reported, not guessed. */
+export function parsePdfTextPages(pages: string[], totalPages = pages.length): ParseResult {
+  const picked = selectStatementPages(pages);
+  if (!picked.length) throw new ExtractionError("No financial statement pages were found in this PDF.");
+
+  const items: RawItem[] = [];
+  let activeYears: number[] = [];
+  let activeStatement: Statement | undefined;
+  let skippedAmbiguousRows = false;
+
+  for (const { i: pageIndex, t: pageText } of picked) {
+    const pageStatement = statementHint(pageText);
+    if (pageStatement) activeStatement = pageStatement;
+
+    for (const rawLine of pageText.split(/\r?\n/)) {
+      const line = rawLine.replace(/\s+/g, " ").trim();
+      if (!line) continue;
+
+      const numbers = numericTokens(line);
+      const lineStatement = statementHint(line);
+      if (lineStatement && numbers.length === 0) activeStatement = lineStatement;
+
+      const years = fiscalYearsInLine(line);
+      const hasYearHeading = /\b(particulars|year ended|financial year|as at|march|june|september|december)\b/i.test(line);
+      if (years.length > 1 || (years.length === 1 && hasYearHeading && numbers.length <= years.length)) {
+        activeYears = years;
+        continue;
+      }
+
+      if (!activeYears.length || !activeStatement || !numbers.length) continue;
+      const prefix = lineLabel(line, numbers);
+      if (!prefix) continue;
+
+      const mapped = mapLabel(prefix.label, activeStatement);
+      const values = numbers
+        .filter((token) => token.start >= prefix.start)
+      if (values.length !== activeYears.length) {
+        skippedAmbiguousRows = true;
+        continue;
+      }
+
+      for (let column = 0; column < activeYears.length; column++) {
+        const value = values[column]?.value;
+        if (value == null) continue;
+        items.push({
+          metric_key: mapped?.key ?? "unrecognized",
+          statement: mapped ? activeStatement : "unrecognized",
+          raw_label: prefix.label.slice(0, 300),
+          fiscal_year: activeYears[column]!,
+          value,
+          confidence: mapped ? mapped.confidence : 0,
+          page_ref: `p.${pageIndex + 1}`,
+          flags: mapped
+            ? ["pdf_text_extracted", ...(mapped.confidence < 0.9 ? ["fuzzy_label"] : [])]
+            : ["pdf_text_extracted", "unrecognized_label"],
+        });
+      }
+    }
+  }
+
+  if (!items.length) throw new ExtractionError("No financial statement figures could be confidently aligned to financial years.");
+  return {
+    method: "pdf_text",
+    units: detectUnits(picked.map((page) => page.t).join("\n")),
+    currency: detectCurrency(picked.map((page) => page.t).join("\n")),
+    basis: detectBasis(picked.map((page) => page.t).join("\n")),
+    pageCount: totalPages,
+    items,
+    ...(skippedAmbiguousRows
+      ? { warnings: ["Some statement lines were skipped because their year columns and values could not be aligned safely."] }
+      : {}),
+  };
+}
+
 const METRIC_KEYS = METRICS.map((d) => d.key) as [string, ...string[]];
 const aiSchema = z.object({
   currency: z.string().nullable(),
@@ -164,7 +269,7 @@ export async function aiStructure(text: string, apiKey: string): Promise<z.infer
   }
 }
 
-export async function parsePdf(buf: ArrayBuffer, apiKey: string | undefined): Promise<ParseResult> {
+export async function parsePdf(buf: ArrayBuffer): Promise<ParseResult> {
   let pages: string[];
   let totalPages: number;
   try {
@@ -176,22 +281,5 @@ export async function parsePdf(buf: ArrayBuffer, apiKey: string | undefined): Pr
   if (fullText.replace(/\s/g, "").length < 200) {
     throw new ExtractionError("This PDF has no text layer (scanned image). OCR is not supported yet — upload a text PDF, Excel or CSV.");
   }
-  if (!apiKey) throw new ExtractionError("AI extraction is not configured (missing API key).");
-  const picked = selectStatementPages(pages);
-  if (!picked.length) throw new ExtractionError("No financial statement pages were found in this PDF.");
-  const text = picked.map((p) => `[Page ${p.i + 1}]\n${p.t}`).join("\n\n");
-  const out = await aiStructure(text, apiKey);
-  return {
-    method: "pdf_ai",
-    units: out.units ?? detectUnits(text),
-    currency: out.currency ?? detectCurrency(text),
-    basis: out.basis ?? detectBasis(text),
-    pageCount: totalPages,
-    items: out.items
-      .filter((x) => METRIC_BY_KEY[x.metric_key])
-      .map((x) => ({
-        metric_key: x.metric_key, raw_label: x.raw_label, fiscal_year: Math.round(x.fiscal_year), value: x.value,
-        confidence: Math.max(0, Math.min(1, x.confidence)), page_ref: x.page ? `p.${x.page}` : null, flags: ["ai_extracted"],
-      })),
-  };
+  return parsePdfTextPages(pages, totalPages);
 }

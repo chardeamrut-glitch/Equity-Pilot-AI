@@ -600,7 +600,10 @@ function UploadPanel({ analysis }: { analysis: Analysis }) {
                   <td className="px-5 py-2.5 font-mono">{documentFiscalYearLabel(d)}</td>
                   <td className="max-w-[220px] truncate px-2 py-2.5">{d.file_name}</td>
                   <td className="px-2 py-2.5 text-muted-foreground">{STATEMENT_TYPES.find((t) => t.value === d.statement_type)?.label}</td>
-                  <td className="px-2 py-2.5"><StatusPill status={d.extraction_status} /></td>
+                  <td className="px-2 py-2.5">
+                    <StatusPill status={d.extraction_status} />
+                    {d.extraction_error && <p className="mt-1 max-w-xs text-[11px] text-warning-foreground">{d.extraction_error}</p>}
+                  </td>
                   <td className="px-3 text-right">
                     <Button variant="ghost" size="icon" aria-label="Delete document" onClick={() => remove.mutate(d)}><Trash2 /></Button>
                   </td>

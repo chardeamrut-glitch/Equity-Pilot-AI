@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { METRICS, type Statement } from "@/lib/financial-metrics";
 import { approveFinancialData, reviewMetric, validateFinancialData } from "@/lib/extraction.functions";
@@ -29,6 +30,8 @@ const FLAG_TEXT: Record<string, string> = {
   negative_unexpected: "Negative value where positive expected",
   ai_extracted: "Read by AI from PDF text",
   excel_imported: "Imported from an Excel or CSV workbook",
+  pdf_text_extracted: "Read from PDF text; manual confirmation required",
+  unrecognized_label: "Unrecognized line; map to a metric or reject",
 };
 
 const fmt = (n: number | null | undefined) => (n == null ? "—" : Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 }));
@@ -66,6 +69,7 @@ export function ReviewPanel({ analysis }: { analysis: { id: string; units: strin
   }, [metrics.data]);
 
   const pending = metrics.data?.filter((r) => r.review_status === "needs_review").length ?? 0;
+  const unmapped = metrics.data?.filter((r) => r.metric_key === "unrecognized" && r.review_status !== "rejected") ?? [];
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["metrics", analysis.id] });
     qc.invalidateQueries({ queryKey: ["analysis", analysis.id] });
@@ -88,7 +92,7 @@ export function ReviewPanel({ analysis }: { analysis: { id: string; units: strin
     onError: (e) => toast.error((e as Error).message),
   });
   const reviewM = useMutation({
-    mutationFn: (v: { id: string; action: "confirm" | "correct" | "reject" | "reset"; value?: number | null }) => review({ data: v }),
+    mutationFn: (v: { id: string; action: "confirm" | "correct" | "reject" | "reset" | "map"; value?: number | null; metricKey?: string }) => review({ data: v }),
     onSuccess: refresh,
     onError: (e) => toast.error((e as Error).message),
   });
@@ -138,6 +142,27 @@ export function ReviewPanel({ analysis }: { analysis: { id: string; units: strin
               </li>
             ))}
           </ul>
+        </Card>
+      )}
+
+      {unmapped.length > 0 && (
+        <Card className="space-y-3 border-warning/40 p-4">
+          <div>
+            <h3 className="text-sm font-semibold">Unrecognized PDF lines</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              These values could not be matched to a known metric. Map each line to the correct metric or reject it; they cannot be approved while unmapped.
+            </p>
+          </div>
+          {unmapped.map((row) => (
+            <UnmappedCandidate
+              key={row.id}
+              row={row}
+              units={analysis.units}
+              busy={reviewM.isPending}
+              onMap={(metricKey) => reviewM.mutate({ id: row.id, action: "map", metricKey })}
+              onReject={() => reviewM.mutate({ id: row.id, action: "reject" })}
+            />
+          ))}
         </Card>
       )}
 
@@ -244,6 +269,42 @@ function CandidateRow({ r, units, busy, onAction }: { r: Row; units: string; bus
         <Button size="sm" disabled={busy || r.review_status === "confirmed"} onClick={() => onAction("confirm")}>Confirm</Button>
         <Button size="sm" variant="ghost" disabled={busy} onClick={() => onAction("reject")}>Reject</Button>
         {(r.is_user_corrected || r.review_status === "rejected") && <Button size="sm" variant="link" onClick={() => onAction("reset")}>Reset to extracted</Button>}
+      </div>
+    </div>
+  );
+}
+
+function UnmappedCandidate({
+  row,
+  units,
+  busy,
+  onMap,
+  onReject,
+}: {
+  row: Row;
+  units: string;
+  busy: boolean;
+  onMap: (metricKey: string) => void;
+  onReject: () => void;
+}) {
+  const [metricKey, setMetricKey] = useState("");
+  return (
+    <div className="rounded-md border bg-background p-3">
+      <div className="flex flex-wrap justify-between gap-2 text-xs">
+        <span className="font-medium">{row.uploaded_documents?.file_name ?? "Uploaded PDF"} · FY{row.fiscal_year}{row.page_ref ? ` · ${row.page_ref}` : ""}</span>
+        <span className="text-warning-foreground">Manual mapping required</span>
+      </div>
+      <p className="mt-2 text-sm">{row.raw_label}</p>
+      <p className="mt-1 font-mono text-sm">{fmt(row.original_value)} {row.source_unit ?? units}</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Select value={metricKey} onValueChange={setMetricKey}>
+          <SelectTrigger className="w-64"><SelectValue placeholder="Choose financial metric" /></SelectTrigger>
+          <SelectContent>
+            {METRICS.map((metric) => <SelectItem key={metric.key} value={metric.key}>{metric.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Button size="sm" disabled={busy || !metricKey} onClick={() => onMap(metricKey)}>Map line</Button>
+        <Button size="sm" variant="ghost" disabled={busy} onClick={onReject}>Reject line</Button>
       </div>
     </div>
   );
