@@ -24,6 +24,9 @@ import { ChartContainer, type ChartConfig } from "@/components/ui/chart";
 import { CartesianGrid, Legend, Line, LineChart, Tooltip, XAxis, YAxis } from "recharts";
 
 export const Route = createFileRoute("/_authenticated/analyses/$id")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    tab: search.tab === "analysis" ? "analysis" as const : undefined,
+  }),
   head: () => ({ meta: [{ title: "Analysis workspace — EquityPilot AI" }, { name: "description", content: "Upload statements and track analysis progress." }] }),
   component: AnalysisPage,
 });
@@ -33,6 +36,7 @@ const MAX = 25 * 1024 * 1024;
 
 function AnalysisPage() {
   const { id } = Route.useParams();
+  const { tab } = Route.useSearch();
   const { data: a, isLoading, error } = useQuery(analysisQuery(id));
 
   if (isLoading) return <div className="mx-auto max-w-6xl space-y-3"><Skeleton className="h-16" /><Skeleton className="h-64" /></div>;
@@ -73,7 +77,7 @@ function AnalysisPage() {
           </ol>
         </Card>
 
-        <Tabs defaultValue="upload">
+        <Tabs defaultValue={tab ?? "upload"}>
           <TabsList className="flex-wrap h-auto">
             <TabsTrigger value="upload">Upload</TabsTrigger>
             <TabsTrigger value="validation">Data validation</TabsTrigger>

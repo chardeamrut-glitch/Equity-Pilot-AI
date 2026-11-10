@@ -59,24 +59,34 @@ function Dashboard() {
           <ul className="divide-y">
             {data!.slice(0, 6).map((a) => {
               const idx = stageIndex(a.stage);
+              const financialsReady = idx >= stageIndex("validated");
               return (
                 <li key={a.id}>
-                  <Link to="/analyses/$id" params={{ id: a.id }} className="flex items-center gap-4 px-5 py-3 hover:bg-muted/60">
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium">{a.companies?.name}</div>
-                      <div className="font-mono text-xs text-muted-foreground">
-                        {a.companies?.nse_symbol ?? a.companies?.bse_code} · {a.reporting_basis} · FY{a.start_fy}–FY{a.end_fy}
+                  <div className="flex items-center gap-2 px-5 py-3 hover:bg-muted/60">
+                    <Link to="/analyses/$id" params={{ id: a.id }} className="flex min-w-0 flex-1 items-center gap-4">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-medium">{a.companies?.name}</div>
+                        <div className="font-mono text-xs text-muted-foreground">
+                          {a.companies?.nse_symbol ?? a.companies?.bse_code} · {a.reporting_basis} · FY{a.start_fy}–FY{a.end_fy}
+                        </div>
                       </div>
-                    </div>
-                    <div className="hidden w-48 sm:block">
-                      <div className="h-1.5 rounded-full bg-muted">
-                        <div className="h-1.5 rounded-full bg-primary" style={{ width: `${((idx + 1) / STAGES.length) * 100}%` }} />
+                      <div className="hidden w-48 sm:block">
+                        <div className="h-1.5 rounded-full bg-muted">
+                          <div className="h-1.5 rounded-full bg-primary" style={{ width: `${((idx + 1) / STAGES.length) * 100}%` }} />
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">{STAGES[idx]?.label}</div>
                       </div>
-                      <div className="mt-1 text-xs text-muted-foreground">{STAGES[idx]?.label}</div>
-                    </div>
-                    <StatusPill status={a.status} />
-                    <ArrowRight className="h-4 w-4 text-muted-foreground" />
-                  </Link>
+                      <StatusPill status={a.status} />
+                      <ArrowRight className="h-4 w-4 text-muted-foreground" />
+                    </Link>
+                    {financialsReady && (
+                      <Button asChild size="sm" variant="ghost">
+                        <Link to="/analyses/$id" params={{ id: a.id }} search={{ tab: "analysis" }}>
+                          Financial performance
+                        </Link>
+                      </Button>
+                    )}
+                  </div>
                 </li>
               );
             })}
