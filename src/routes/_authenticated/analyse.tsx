@@ -122,6 +122,7 @@ const updateFinancialCell = (rowIndex: number, field: keyof FinancialYearDraft, 
                 excelData: {
                   financialYears: validation.financialYears,
                   declaredUnits: financialWorkbook.declaredUnits,
+                  missingColumns: financialWorkbook.missingColumns,
                   duplicateColumns: financialWorkbook.duplicateColumns,
                 },
               }
@@ -132,7 +133,7 @@ const updateFinancialCell = (rowIndex: number, field: keyof FinancialYearDraft, 
       navigate({
         to: "/analyses/$id",
         params: { id: r.id },
-        search: validation?.financialYears ? { tab: "analysis" } : {},
+        search: validation?.financialYears ? { tab: "validation" } : {},
       }),
     onError: (e) => toast.error((e as Error).message),
   });
@@ -252,20 +253,20 @@ const updateFinancialCell = (rowIndex: number, field: keyof FinancialYearDraft, 
   </h3>
 
   <p className="mt-1 text-sm text-muted-foreground">
-    Upload a standardized Excel workbook to validate and review
+    Upload a standardized Excel or CSV workbook to validate and review
     the figures before calculating financial ratios.
   </p>
 
   <div className="mt-4 rounded-lg border border-dashed p-5">
     <div className="flex flex-col gap-3">
       <Label htmlFor="financial-excel">
-        Financial statements (.xlsx or .xls)
+        Financial statements (.xlsx, .xls or .csv)
       </Label>
 
       <Input
         id="financial-excel"
         type="file"
-        accept=".xlsx,.xls"
+        accept=".xlsx,.xls,.csv"
         disabled={uploadingExcel}
         onChange={(e) => {
           const file = e.currentTarget.files?.[0];
@@ -459,7 +460,7 @@ const updateFinancialCell = (rowIndex: number, field: keyof FinancialYearDraft, 
             disabled={createM.isPending || (!!financialWorkbook && !validation?.financialYears)}
           >
             {createM.isPending && <Loader2 className="animate-spin" />}
-            {validation?.financialYears ? "Confirm & view financial analysis" : "Confirm & continue to upload"}
+            {validation?.financialYears ? "Confirm & review imported data" : "Confirm & continue to upload"}
           </Button>
         </Card>
       )}

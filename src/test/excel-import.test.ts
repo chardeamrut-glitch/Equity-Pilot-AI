@@ -2,6 +2,7 @@ import * as XLSX from "xlsx";
 import { describe, expect, it } from "vitest";
 import {
   readFinancialWorkbook,
+  financialMetricRowsFromYears,
   validateImportedFinancialYears,
   validateFinancialWorkbook,
   type FinancialWorkbook,
@@ -66,6 +67,26 @@ describe("Excel financial data import and validation", () => {
     expect(imported.declaredUnits).toEqual(["crore"]);
     expect(imported.rows[0]?.revenue).toBe("100");
     expect(imported.rows[1]?.revenue).toBe("");
+  });
+
+  it("parses CSV workbooks through the same validated importer", async () => {
+    const csv = [
+      "Financial year,Revenue (₹ crore),EBITDA,EBIT,Net profit,Total debt,Total equity,Current assets,Current liabilities,Operating cash flow,Capex,Average equity",
+      "2023,100,20,15,10,5,40,25,10,12,3,30",
+      "2024,110,22,16,11,4,42,26,11,13,4,",
+    ].join("\n");
+    const buffer = new TextEncoder().encode(csv).buffer;
+    const file = new File([], "financials.csv", { type: "text/csv" });
+    Object.defineProperty(file, "size", { value: buffer.byteLength });
+    Object.defineProperty(file, "arrayBuffer", { value: async () => buffer });
+
+    const imported = await readFinancialWorkbook(file);
+    const result = validateFinancialWorkbook(imported, imported.rows, "crore");
+
+    expect(result.financialYears).toHaveLength(2);
+    expect(result.financialYears?.[0]?.averageEquity).toBe(30);
+    expect(result.financialYears?.[1]?.averageEquity).toBeUndefined();
+    expect(imported.declaredUnits).toContain("crore");
   });
 
   it("keeps blank required values missing and never coerces them to zero", () => {
@@ -140,6 +161,20 @@ describe("Excel financial data import and validation", () => {
     expect(result.financialYears?.[0]?.averageCapitalEmployed).toBeUndefined();
     expect(result.financialYears?.[1]?.averageEquity).toBeUndefined();
     expect(result.issues.some((issue) => issue.severity === "error")).toBe(false);
+  });
+
+  it("maps only present workbook values to review metrics", () => {
+    const metrics = financialMetricRowsFromYears([
+      { year: "2024", revenue: 110, currentAssets: 25, averageEquity: 30 },
+    ], "crore");
+
+    expect(metrics.map((metric) => metric.metric_key)).toEqual(["revenue", "current_assets", "average_equity"]);
+    expect(metrics.every((metric) => metric.review_status === "needs_review")).toBe(true);
+    expect(metrics.find((metric) => metric.metric_key === "revenue")).toMatchObject({
+      value: 110,
+      normalized_value: 110,
+      source_unit: "crore",
+    });
   });
 
   it("allows explicit zero and parses parenthesized negative values", () => {

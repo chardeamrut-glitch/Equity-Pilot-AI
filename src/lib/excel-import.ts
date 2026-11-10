@@ -1,9 +1,31 @@
 import * as XLSX from "xlsx";
+import { z } from "zod";
 import type { FinancialYear } from "./financial-analysis";
-import { detectUnits, parseFiscalYear, type Unit } from "./financial-metrics";
+import { detectUnits, METRIC_BY_KEY, parseFiscalYear, type Unit } from "./financial-metrics";
 
 export type FinancialField = keyof FinancialYear;
 export type FinancialYearDraft = Record<FinancialField, string>;
+
+export const financialYearSchema = z.object({
+  year: z.string().trim().min(1),
+  revenue: z.number().finite().nullable().default(null),
+  ebitda: z.number().finite().nullable().default(null),
+  ebit: z.number().finite().nullable().default(null),
+  netProfit: z.number().finite().nullable().default(null),
+  totalDebt: z.number().finite().nullable().default(null),
+  totalEquity: z.number().finite().nullable().default(null),
+  currentAssets: z.number().finite().nullable().default(null),
+  currentLiabilities: z.number().finite().nullable().default(null),
+  operatingCashFlow: z.number().finite().nullable().default(null),
+  capex: z.number().finite().nullable().default(null),
+  averageEquity: z.number().finite().nullable().default(null),
+  averageCapitalEmployed: z.number().finite().nullable().default(null),
+});
+
+export const financialFieldSchema = z.enum([
+  "year", "revenue", "ebitda", "ebit", "netProfit", "totalDebt", "totalEquity",
+  "currentAssets", "currentLiabilities", "operatingCashFlow", "capex", "averageEquity", "averageCapitalEmployed",
+]);
 
 export interface FinancialWorkbook {
   rows: FinancialYearDraft[];
@@ -120,14 +142,17 @@ function blankDraft(): FinancialYearDraft {
 
 export async function readFinancialWorkbook(file: File): Promise<FinancialWorkbook> {
   const extension = file.name.split(".").pop()?.toLowerCase();
-  if (!["xlsx", "xls"].includes(extension || "")) {
-    throw new Error("Please upload an XLSX or XLS file.");
+  if (!["xlsx", "xls", "csv"].includes(extension || "")) {
+    throw new Error("Please upload an XLSX, XLS or CSV file.");
   }
   if (file.size > 10 * 1024 * 1024) {
     throw new Error("Maximum file size is 10 MB.");
   }
 
-  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const buffer = await file.arrayBuffer();
+  const workbook = extension === "csv"
+    ? XLSX.read(new TextDecoder().decode(buffer), { type: "string", raw: false })
+    : XLSX.read(buffer, { type: "array", raw: false });
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) throw new Error("No worksheet found.");
 
@@ -326,6 +351,7 @@ export function validateImportedFinancialYears(
   declaredUnits: Unit[],
   duplicateColumns: FinancialField[],
   analysisUnit: Unit,
+  missingColumns: FinancialField[] = [],
 ): FinancialWorkbookValidation {
   const rows = financialYears.map((year) =>
     Object.fromEntries(
@@ -341,8 +367,50 @@ export function validateImportedFinancialYears(
   );
 
   return validateFinancialWorkbook(
-    { rows: [], declaredUnits, missingColumns: [], duplicateColumns },
+    { rows: [], declaredUnits, missingColumns, duplicateColumns },
     rows,
     analysisUnit,
+  );
+}
+
+const FINANCIAL_METRIC_FIELDS = [
+  ["revenue", "revenue"],
+  ["ebitda", "ebitda"],
+  ["ebit", "ebit"],
+  ["netProfit", "net_profit"],
+  ["totalDebt", "total_debt"],
+  ["totalEquity", "total_equity"],
+  ["currentAssets", "current_assets"],
+  ["currentLiabilities", "current_liabilities"],
+  ["operatingCashFlow", "cash_from_operations"],
+  ["capex", "capex"],
+  ["averageEquity", "average_equity"],
+  ["averageCapitalEmployed", "average_capital_employed"],
+] as const;
+
+export function financialMetricRowsFromYears(financialYears: FinancialYear[], units: Unit) {
+  return financialYears.flatMap((year) =>
+    FINANCIAL_METRIC_FIELDS.flatMap(([field, metricKey]) => {
+      const value = year[field];
+      if (value == null) return [];
+
+      const metric = METRIC_BY_KEY[metricKey];
+      if (!metric) throw new Error(`Unknown financial metric: ${metricKey}`);
+      const label = FINANCIAL_YEAR_FIELDS.find((item) => item.key === field)?.label ?? field;
+      return [{
+        fiscal_year: Number(year.year),
+        metric_key: metricKey,
+        statement: metric.statement,
+        raw_label: label,
+        value,
+        original_value: value,
+        normalized_value: value,
+        source_unit: metric.scaled ? units : "absolute",
+        confidence: 1,
+        page_ref: null,
+        flags: ["excel_imported"],
+        review_status: "needs_review",
+      }];
+    }),
   );
 }

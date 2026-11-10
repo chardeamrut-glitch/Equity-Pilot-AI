@@ -1,6 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import {
+  financialFieldSchema,
+  financialMetricRowsFromYears,
+  financialYearSchema,
+  validateImportedFinancialYears,
+} from "./excel-import";
 import { METRIC_BY_KEY, convertUnits, type Unit } from "./financial-metrics";
 import { consolidate, initialReviewStatus, validateFinancials, type MetricValue } from "./financial-validation";
 
@@ -8,6 +14,166 @@ const MAX_BYTES = 25 * 1024 * 1024;
 /** Flags that make a value uncertain and force manual review. */
 const UNCERTAIN = new Set(["fuzzy_label", "unit_assumed", "basis_mismatch", "duplicate_in_document", "negative_unexpected"]);
 const MUST_BE_POSITIVE = new Set(["revenue", "total_assets", "total_income", "share_capital"]);
+
+export const importExcelWorkbook = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) =>
+    z.object({
+      documentId: z.string().uuid(),
+      financialYears: z.array(financialYearSchema).min(2).max(5),
+      declaredUnits: z.array(z.enum(["crore", "lakh", "million", "thousand", "absolute"])),
+      missingColumns: z.array(financialFieldSchema),
+      duplicateColumns: z.array(financialFieldSchema),
+    }).parse(input),
+  )
+  .handler(async ({ data, context }) => {
+    const sb = context.supabase;
+    const { data: document, error } = await sb
+      .from("uploaded_documents")
+      .select("id,file_name,analysis_id,extraction_status,analyses(id,user_id,units,reporting_basis,start_fy,end_fy)")
+      .eq("id", data.documentId)
+      .single();
+    if (error || !document || !document.analyses || document.analyses.user_id !== context.userId) {
+      throw new Error("Document not found or you do not have access.");
+    }
+
+    const analysis = document.analyses;
+    if (!["xlsx", "xls", "csv"].includes(document.file_name.toLowerCase().split(".").pop() ?? "")) {
+      throw new Error("Only Excel or CSV workbooks can be imported this way.");
+    }
+    if (document.extraction_status === "completed") {
+      throw new Error("This workbook has already been imported.");
+    }
+
+    const validation = validateImportedFinancialYears(
+      data.financialYears,
+      data.declaredUnits,
+      data.duplicateColumns,
+      analysis.units as Unit,
+      data.missingColumns,
+    );
+    if (!validation.financialYears) {
+      const errors = validation.issues.filter((issue) => issue.severity === "error");
+      throw new Error(errors.map((issue) => issue.message).join(" "));
+    }
+
+    const startFy = analysis.start_fy;
+    const endFy = analysis.end_fy;
+    if (startFy == null || endFy == null) {
+      throw new Error("Set a financial-year range on the analysis before importing a workbook.");
+    }
+    const fiscalYears = validation.financialYears.map((year) => Number(year.year));
+    if (fiscalYears.some((year) => year < startFy || year > endFy)) {
+      throw new Error(`Workbook years must be within FY${startFy}–FY${endFy}.`);
+    }
+
+    const { data: existingMetrics, error: metricsQueryError } = await sb
+      .from("extracted_financial_metrics")
+      .select("id")
+      .eq("document_id", document.id)
+      .limit(1);
+    if (metricsQueryError) throw new Error(metricsQueryError.message);
+    if (existingMetrics.length) throw new Error("This workbook already has imported values.");
+
+    const { data: existingPeriods, error: periodsError } = await sb
+      .from("financial_periods")
+      .select("id")
+      .eq("analysis_id", analysis.id)
+      .limit(1);
+    if (periodsError) throw new Error(periodsError.message);
+    if (existingPeriods.length) {
+      throw new Error("This analysis already has saved financial records. Import the workbook into a new analysis to avoid replacing existing data.");
+    }
+
+    const metricRows = financialMetricRowsFromYears(validation.financialYears, analysis.units as Unit)
+      .map((metric) => ({
+        ...metric,
+        analysis_id: analysis.id,
+        document_id: document.id,
+      }));
+    if (!metricRows.length) throw new Error("The workbook contains no financial values to import.");
+
+    const { data: claimedDocument, error: claimError } = await sb
+      .from("uploaded_documents")
+      .update({ extraction_status: "processing", extraction_error: null })
+      .eq("id", document.id)
+      .in("extraction_status", ["pending", "failed"])
+      .select("id")
+      .maybeSingle();
+    if (claimError) throw new Error(`Could not claim workbook for import: ${claimError.message}`);
+    if (!claimedDocument) throw new Error("This workbook is already being imported or has already been processed.");
+
+    const { error: insertError } = await sb
+      .from("extracted_financial_metrics")
+      .insert(metricRows);
+    if (insertError) {
+      const { error: resetError } = await sb
+        .from("uploaded_documents")
+        .update({ extraction_status: "failed", extraction_error: insertError.message })
+        .eq("id", document.id);
+      if (resetError) {
+        throw new Error(`Could not save workbook values for review: ${insertError.message}. Status update failed: ${resetError.message}`);
+      }
+      throw new Error(`Could not save workbook values for review: ${insertError.message}`);
+    }
+
+    const years = [...new Set(fiscalYears)].sort((a, b) => a - b);
+    const { error: documentError } = await sb
+      .from("uploaded_documents")
+      .update({
+        extraction_status: "completed",
+        extraction_error: null,
+        extraction_method: "spreadsheet",
+        detected_units: data.declaredUnits[0] ?? analysis.units,
+        detected_currency: "INR",
+        detected_basis: analysis.reporting_basis,
+        detected_fiscal_years: years,
+        extracted_at: new Date().toISOString(),
+      })
+      .eq("id", document.id);
+    if (documentError) {
+      const { error: cleanupError } = await sb
+        .from("extracted_financial_metrics")
+        .delete()
+        .eq("document_id", document.id);
+      if (cleanupError) {
+        throw new Error(`Could not update workbook status: ${documentError.message}. Metric cleanup failed: ${cleanupError.message}`);
+      }
+      const { error: resetError } = await sb
+        .from("uploaded_documents")
+        .update({ extraction_status: "pending", extraction_error: documentError.message })
+        .eq("id", document.id);
+      if (resetError) {
+        throw new Error(`Could not update workbook status: ${documentError.message}. Status reset failed: ${resetError.message}`);
+      }
+      throw new Error(`Could not update workbook status: ${documentError.message}`);
+    }
+
+    const { error: stageError } = await sb
+      .from("analyses")
+      .update({ stage: "extracted" })
+      .eq("id", analysis.id)
+      .eq("user_id", context.userId);
+    if (stageError) {
+      const { error: cleanupError } = await sb
+        .from("extracted_financial_metrics")
+        .delete()
+        .eq("document_id", document.id);
+      if (cleanupError) {
+        throw new Error(`Analysis status could not be updated: ${stageError.message}. Metric cleanup failed: ${cleanupError.message}`);
+      }
+      const { error: resetError } = await sb
+        .from("uploaded_documents")
+        .update({ extraction_status: "pending", extraction_error: stageError.message })
+        .eq("id", document.id);
+      if (resetError) {
+        throw new Error(`Analysis status could not be updated: ${stageError.message}. Workbook status reset failed: ${resetError.message}`);
+      }
+      throw new Error(`Analysis status could not be updated: ${stageError.message}`);
+    }
+
+    return { ok: true as const, count: metricRows.length, years };
+  });
 
 // POST /api/documents/extract
 export const extractDocument = createServerFn({ method: "POST" })

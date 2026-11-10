@@ -28,6 +28,7 @@ const FLAG_TEXT: Record<string, string> = {
   duplicate_in_document: "Same line appears more than once in this document",
   negative_unexpected: "Negative value where positive expected",
   ai_extracted: "Read by AI from PDF text",
+  excel_imported: "Imported from an Excel or CSV workbook",
 };
 
 const fmt = (n: number | null | undefined) => (n == null ? "—" : Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 }));
@@ -95,7 +96,7 @@ export function ReviewPanel({ analysis }: { analysis: { id: string; units: strin
   if (metrics.isLoading) return <Card className="p-6"><Skeleton className="h-64" /></Card>;
   if (metrics.error) return <Card className="p-6 text-sm text-destructive">{(metrics.error as Error).message}</Card>;
   if (!metrics.data?.length)
-    return <Card className="p-10 text-center text-sm text-muted-foreground">No extracted data yet. Upload statements and click <span className="font-medium text-foreground">Extract</span> on the Upload tab.</Card>;
+    return <Card className="p-10 text-center text-sm text-muted-foreground">No extracted data yet. Upload an Excel or CSV workbook, or upload statements and click <span className="font-medium text-foreground">Extract data</span> on the Upload tab.</Card>;
 
   const errors = issues?.filter((i) => i.severity === "error" && !i.passed) ?? [];
   const warnings = issues?.filter((i) => i.severity === "warning" && !i.passed) ?? [];

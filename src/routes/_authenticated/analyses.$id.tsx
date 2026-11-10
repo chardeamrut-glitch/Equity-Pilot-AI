@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { AlertTriangle, Check, FileUp, Loader2, Lock, Trash2, Upload } from "lucide-react";
@@ -13,8 +13,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusPill } from "@/components/brand";
 import { analysisQuery, documentsQuery, type AnalysisRow } from "@/lib/queries";
 import { STAGES, STATEMENT_TYPES, fyLabel, stageIndex } from "@/lib/config";
-import { extractDocument } from "@/lib/extraction.functions";
+import { extractDocument, importExcelWorkbook } from "@/lib/extraction.functions";
 import { ReviewPanel } from "@/components/review-panel";
+import { readFinancialWorkbook, validateFinancialWorkbook } from "@/lib/excel-import";
+import type { Unit } from "@/lib/financial-metrics";
 import {
   analyzeFinancials,
   calculateCAGR,
@@ -26,7 +28,9 @@ import { CartesianGrid, Legend, Line, LineChart, Tooltip, XAxis, YAxis } from "r
 
 export const Route = createFileRoute("/_authenticated/analyses/$id")({
   validateSearch: (search: Record<string, unknown>) => ({
-    ...(search["tab"] === "analysis" ? { tab: "analysis" as const } : {}),
+    ...(search["tab"] === "analysis" || search["tab"] === "validation"
+      ? { tab: search["tab"] }
+      : {}),
   }),
   head: () => ({ meta: [{ title: "Analysis workspace — EquityPilot AI" }, { name: "description", content: "Upload statements and track analysis progress." }] }),
   component: AnalysisPage,
@@ -34,6 +38,14 @@ export const Route = createFileRoute("/_authenticated/analyses/$id")({
 
 const ACCEPT = ".pdf,.xlsx,.xls,.csv";
 const MAX = 25 * 1024 * 1024;
+
+function documentFiscalYearLabel(document: { fiscal_year: number; detected_fiscal_years: number[] }) {
+  const years = document.detected_fiscal_years.length
+    ? [...document.detected_fiscal_years].sort((a, b) => a - b)
+    : [document.fiscal_year];
+  const label = (year: number) => `FY${String(year).slice(-2)}`;
+  return years.length > 1 ? `${label(years[0]!)}–${label(years[years.length - 1]!)}` : label(years[0]!);
+}
 
 function AnalysisPage() {
   const { id } = Route.useParams();
@@ -381,7 +393,9 @@ type Analysis = AnalysisRow;
 
 function UploadPanel({ analysis }: { analysis: Analysis }) {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const extract = useServerFn(extractDocument);
+  const importWorkbook = useServerFn(importExcelWorkbook);
   const docs = useQuery(documentsQuery(analysis.id));
   const years: number[] = [];
   for (let y = analysis.end_fy!; y >= analysis.start_fy!; y--) years.push(y);
@@ -392,36 +406,105 @@ function UploadPanel({ analysis }: { analysis: Analysis }) {
   const upload = useMutation({
     mutationFn: async (file: File) => {
       if (file.size > MAX) throw new Error("File exceeds 25 MB");
+      const extension = file.name.split(".").pop()?.toLowerCase();
+      const isWorkbook = extension === "xlsx" || extension === "xls" || extension === "csv";
+      const workbook = isWorkbook ? await readFinancialWorkbook(file) : null;
+      const validation = workbook
+        ? validateFinancialWorkbook(workbook, workbook.rows, analysis.units as Unit)
+        : null;
+      if (validation && !validation.financialYears) {
+        const errors = validation.issues
+          .filter((issue) => issue.severity === "error")
+          .map((issue) => issue.message);
+        throw new Error(errors.join(" ") || "The workbook could not be validated.");
+      }
+
       const { data: u } = await supabase.auth.getUser();
       if (!u.user) throw new Error("Not signed in");
       const safe = file.name.replace(/[^\w.\-]/g, "_");
       const path = `${u.user.id}/${analysis.id}/${crypto.randomUUID()}-${safe}`;
       const { error: sErr } = await supabase.storage.from("financial-documents").upload(path, file, { contentType: file.type });
       if (sErr) throw sErr;
-      const { error } = await supabase.from("uploaded_documents").insert({
+      const { data: document, error } = await supabase.from("uploaded_documents").insert({
         analysis_id: analysis.id,
         user_id: u.user.id,
-        fiscal_year: Number(fy),
+        fiscal_year: validation?.financialYears
+          ? Math.max(...validation.financialYears.map((year) => Number(year.year)))
+          : Number(fy),
         statement_type: type as "annual_report",
         reporting_basis: analysis.reporting_basis,
         file_name: file.name,
         storage_path: path,
         mime_type: file.type,
         size_bytes: file.size,
-      });
+      }).select("id").single();
       if (error) {
-        await supabase.storage.from("financial-documents").remove([path]);
+        const { error: cleanupError } = await supabase.storage.from("financial-documents").remove([path]);
+        if (cleanupError) throw new Error(`${error.message}. Uploaded file cleanup failed: ${cleanupError.message}`);
         throw error;
       }
-      if (analysis.stage !== "documents_uploaded") {
-        await supabase.from("analyses").update({ stage: "documents_uploaded" }).eq("id", analysis.id);
+
+      if (validation?.financialYears && workbook) {
+        try {
+          await importWorkbook({
+            data: {
+              documentId: document.id,
+              financialYears: validation.financialYears,
+              declaredUnits: workbook.declaredUnits,
+              missingColumns: workbook.missingColumns,
+              duplicateColumns: workbook.duplicateColumns,
+            },
+          });
+        } catch (importError) {
+          const importMessage = importError instanceof Error ? importError.message : String(importError);
+          const { error: metricCleanupError } = await supabase
+            .from("extracted_financial_metrics")
+            .delete()
+            .eq("document_id", document.id);
+          if (metricCleanupError) {
+            throw new Error(`${importMessage}. Imported metric cleanup failed: ${metricCleanupError.message}`);
+          }
+          const { error: documentCleanupError } = await supabase
+            .from("uploaded_documents")
+            .delete()
+            .eq("id", document.id);
+          if (documentCleanupError) {
+            throw new Error(`${importMessage}. Document cleanup failed: ${documentCleanupError.message}`);
+          }
+          const { error: storageCleanupError } = await supabase.storage.from("financial-documents").remove([path]);
+          if (storageCleanupError) {
+            throw new Error(`${importMessage}. File cleanup failed: ${storageCleanupError.message}`);
+          }
+          throw importError;
+        }
+        return {
+          workbook: true,
+          warnings: validation.issues.filter((issue) => issue.severity === "warning").map((issue) => issue.message),
+        };
       }
+      if (analysis.stage !== "documents_uploaded") {
+        const { error: stageError } = await supabase.from("analyses").update({ stage: "documents_uploaded" }).eq("id", analysis.id);
+        if (stageError) throw stageError;
+      }
+      return { workbook: false, warnings: [] };
     },
-    onSuccess: () => {
-      toast.success("Uploaded");
+    onSuccess: async (result) => {
+      if (result.workbook) {
+        toast.success("Workbook imported. Review and approve the values on Data validation.");
+        if (result.warnings.length) toast.warning(result.warnings.join(" "));
+      } else {
+        toast.success("Uploaded");
+      }
       qc.invalidateQueries({ queryKey: ["documents", analysis.id] });
       qc.invalidateQueries({ queryKey: ["analysis", analysis.id] });
       qc.invalidateQueries({ queryKey: ["analyses"] });
+      if (result.workbook) {
+        await navigate({
+          to: "/analyses/$id",
+          params: { id: analysis.id },
+          search: { tab: "validation" },
+        });
+      }
     },
     onError: (e) => toast.error((e as Error).message),
   });
@@ -459,14 +542,16 @@ function UploadPanel({ analysis }: { analysis: Analysis }) {
     onError: (e) => toast.error((e as Error).message),
   });
 
-  const covered = new Set(docs.data?.map((d) => d.fiscal_year));
+  const covered = new Set(docs.data?.flatMap((d) =>
+    d.detected_fiscal_years.length ? d.detected_fiscal_years : [d.fiscal_year],
+  ));
 
   return (
     <div className="space-y-4">
       <Card className="p-5">
         <h2 className="font-semibold">Upload financial statements</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Upload {analysis.reporting_basis} statements for each of the five years. PDF, Excel or CSV, up to 25 MB. Files are private to your account.
+          Upload {analysis.reporting_basis} statements for each of the five years. Excel/CSV workbooks up to 10 MB; PDFs up to 25 MB. Files are private to your account.
         </p>
         <div className="mt-4 flex flex-wrap items-end gap-3">
           <div className="w-56">
@@ -512,7 +597,7 @@ function UploadPanel({ analysis }: { analysis: Analysis }) {
             <tbody className="divide-y">
               {docs.data.map((d) => (
                 <tr key={d.id}>
-                  <td className="px-5 py-2.5 font-mono">FY{String(d.fiscal_year).slice(2)}</td>
+                  <td className="px-5 py-2.5 font-mono">{documentFiscalYearLabel(d)}</td>
                   <td className="max-w-[220px] truncate px-2 py-2.5">{d.file_name}</td>
                   <td className="px-2 py-2.5 text-muted-foreground">{STATEMENT_TYPES.find((t) => t.value === d.statement_type)?.label}</td>
                   <td className="px-2 py-2.5"><StatusPill status={d.extraction_status} /></td>
@@ -527,10 +612,12 @@ function UploadPanel({ analysis }: { analysis: Analysis }) {
         {!!docs.data?.length && (
           <div className="flex flex-wrap items-center justify-between gap-3 border-t px-5 py-3">
             <p className="text-xs text-muted-foreground">{covered.size} of {years.length} years covered.</p>
-            <Button size="sm" variant="outline" onClick={() => extractM.mutate()} disabled={extractM.isPending}>
-              {extractM.isPending && <Loader2 className="animate-spin" />}
-              {extractM.isPending ? "Extracting…" : "Extract data"}
-            </Button>
+            {docs.data.some((document) => document.extraction_status !== "completed") && (
+              <Button size="sm" variant="outline" onClick={() => extractM.mutate()} disabled={extractM.isPending}>
+                {extractM.isPending && <Loader2 className="animate-spin" />}
+                {extractM.isPending ? "Extracting…" : "Extract data"}
+              </Button>
+            )}
           </div>
         )}
       </Card>
