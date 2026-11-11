@@ -154,6 +154,15 @@ export function selectStatementPages(pages: string[], maxChars = 90_000) {
   return picked.sort((a, b) => a.i - b.i);
 }
 
+function isNotesPage(headings: string[]) {
+  const firstLines = headings.slice(0, 12);
+  const notesIndex = firstLines.findIndex((line) =>
+    /^\s*notes?\s+to\s+(?:the\s+)?(?:(?:consolidated|standalone)\s+)?financial statements\b/i.test(line),
+  );
+  if (notesIndex < 0) return false;
+  return !firstLines.slice(0, notesIndex).some((line) => statementHeading(line));
+}
+
 const FISCAL_YEAR_TOKEN =
   /\b(?:FY\s*['’]?\d{2,4}(?:\s*[-–/]\s*\d{2,4})?|\d{4}\s*[-–/]\s*\d{2,4}|\d{1,2}(?:st|nd|rd|th)?\s+[a-z]{3,9}\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+\d{4}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|(?:19|20)\d{2})\b/gi;
 const FINANCIAL_TOKEN =
@@ -197,9 +206,19 @@ function statementHeading(line: string): Statement | undefined {
 }
 
 function isYearHeading(line: string, years: number[]) {
-  const fullDate = /\b(?:\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+\d{4})\b/i.test(line);
-  if (fullDate && !/\b(particulars|year ended|financial year|as at)\b/i.test(line)) return false;
-  return years.length > 1 || (years.length === 1 && /\b(particulars|year ended|financial year|as at|march|june|september|december)\b/i.test(line));
+  if (!years.length || looksLikeNarrative(line)) return false;
+  const withoutDates = line
+    .replace(/\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/g, " ")
+    .replace(/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+\d{4}\b/gi, " ")
+    .replace(/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{4}\b/gi, " ");
+  const residual = withoutDates
+    .replace(FISCAL_YEAR_TOKEN, " ")
+    .replace(/\b(?:note|notes|no|number|particulars|year|ended|financial|fy|as|at|january|february|march|april|may|june|july|august|september|october|november|december)\b/gi, " ")
+    .replace(/\b\d+\b/g, " ")
+    .replace(/[|:;.,()\-–/]/g, " ")
+    .trim();
+  if (residual.length) return false;
+  return years.length > 1 || /\b(particulars|year ended|financial year|as at)\b/i.test(line);
 }
 
 function rowValues(
@@ -240,7 +259,7 @@ export function parsePdfTextPages(
 
   for (const { i: pageIndex, t: pageText } of picked) {
     const headings = pageText.split(/\r?\n/).map((line) => line.trim());
-    if (/^\s*notes?\s+to\s+(?:the\s+)?(?:(?:consolidated|standalone)\s+)?financial statements\b/i.test(headings.slice(0, 12).join(" "))) {
+    if (isNotesPage(headings)) {
       activeYears = [];
       pendingYears = [];
       activeStatement = undefined;
@@ -300,7 +319,8 @@ export function parsePdfTextPages(
       if (!prefix) continue;
 
       const mapped = mapLabel(prefix.label, activeStatement);
-      if (!mapped || (mapped.confidence < 0.9 && looksLikeNarrative(prefix.label))) {
+      if (!mapped || METRIC_BY_KEY[mapped.key]?.statement !== activeStatement ||
+        (mapped.confidence < 0.9 && looksLikeNarrative(prefix.label))) {
         skippedAmbiguousRows = true;
         continue;
       }

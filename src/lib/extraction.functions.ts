@@ -471,13 +471,15 @@ export const reviewMetric = createServerFn({ method: "POST" })
 async function loadValues(sb: typeof import("@/integrations/supabase/client").supabase, analysisId: string) {
   const { data, error } = await sb
     .from("extracted_financial_metrics")
-    .select("id,fiscal_year,metric_key,normalized_value,document_id,review_status,source_unit,flags,uploaded_documents(created_at,fiscal_year,reporting_basis,detected_basis)")
+    .select("id,fiscal_year,metric_key,statement,page_ref,normalized_value,document_id,review_status,source_unit,flags,uploaded_documents(created_at,fiscal_year,reporting_basis,detected_basis)")
     .eq("analysis_id", analysisId);
   if (error) throw new Error(error.message);
   return (data ?? []).map((r) => ({
     id: r.id,
     fiscal_year: r.fiscal_year,
     metric_key: r.metric_key,
+    statement: r.statement as import("./financial-metrics").Statement,
+    page_ref: r.page_ref,
     value: r.normalized_value == null ? null : Number(r.normalized_value),
     document_id: r.document_id,
     review_status: r.review_status,

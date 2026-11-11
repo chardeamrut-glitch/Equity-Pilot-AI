@@ -1,5 +1,5 @@
 // Deterministic validation of extracted figures. All values must be in the same unit.
-import { METRICS } from "./financial-metrics";
+import { METRICS, type Statement } from "./financial-metrics";
 
 export interface MetricValue {
   id?: string;
@@ -7,6 +7,8 @@ export interface MetricValue {
   metric_key: string;
   value: number | null;
   document_id?: string | null;
+  statement?: Statement | null;
+  page_ref?: string | null;
   review_status?: string;
   source_unit?: string | null;
   reporting_basis?: string | null;
@@ -51,7 +53,11 @@ export function consolidate(values: MetricValue[]) {
     const [fy, key] = k.split("|");
     const contexts = new Map<string, MetricValue[]>();
     for (const value of allValues) {
-      const contextKey = JSON.stringify([value.reporting_basis ?? null, value.source_unit ?? null]);
+      const contextKey = JSON.stringify([
+        value.statement ?? null,
+        value.reporting_basis ?? null,
+        value.source_unit ?? null,
+      ]);
       contexts.set(contextKey, [...(contexts.get(contextKey) ?? []), value]);
     }
     if (contexts.size > 1) {
@@ -59,26 +65,31 @@ export function consolidate(values: MetricValue[]) {
         fiscal_year: Number(fy),
         metric_key: key!,
         values: [],
-        reason: "reporting bases or source units differ; values were not compared",
+        reason: "statement types, reporting bases, or source units differ; values were not compared",
         rule_key: "source_context_mismatch",
       });
     }
 
     for (const list of contexts.values()) {
       const first = list[0]!.value!;
+      const sameStatement = list.every((x) => x.statement != null && x.statement === list[0]!.statement);
       const sameBasis = list.every((x) => x.reporting_basis != null && x.reporting_basis === list[0]!.reporting_basis);
       const sameUnit = list.every((x) => x.source_unit != null && x.source_unit === list[0]!.source_unit);
       const hasPdfValue = list.some((x) => x.flags?.includes("pdf_text_extracted"));
       const allPdfValues = list.every((x) => x.flags?.includes("pdf_text_extracted"));
       const sameBasisAndUnits = list.length < 2 || !hasPdfValue || (
-        allPdfValues && sameBasis && sameUnit && list.every((x) => !x.flags?.includes("unit_assumed"))
+        allPdfValues && sameStatement && sameBasis && sameUnit &&
+        list.every((x) => !x.flags?.includes("unit_assumed"))
       );
       const valuesDiffer = list.some((x) => !close(x.value!, first, DUPLICATE_TOLERANCE));
       if (list.length > 1 && (valuesDiffer || (hasPdfValue && (!sameBasisAndUnits || !allPdfValues)))) {
         const reason = hasPdfValue && !allPdfValues ? "source types differ"
-          : !sameBasis ? "reporting basis is missing or differs"
+          : !sameStatement ? "statement type is missing or differs"
+            : !sameBasis ? "reporting basis is missing or differs"
             : !sameUnit ? "source unit is missing, differs, or was assumed"
-              : "values differ across annual reports";
+              : list.some((x) => x.source_report_fiscal_year != null && x.source_report_fiscal_year !== x.fiscal_year)
+                ? "overlapping annual reports contain different comparative values"
+                : "values differ across annual reports";
         conflicts.push({
           fiscal_year: Number(fy),
           metric_key: key!,

@@ -65,8 +65,8 @@ describe("validation", () => {
   it("flags conflicting duplicates across documents", () => {
     const issues = validateFinancials(
       [
-        { fiscal_year: 2023, metric_key: "revenue", value: 500, document_id: "a", reporting_basis: "consolidated", source_unit: "crore", flags: ["pdf_text_extracted"] },
-        { fiscal_year: 2023, metric_key: "revenue", value: 520, document_id: "b", reporting_basis: "consolidated", source_unit: "crore", flags: ["pdf_text_extracted"] },
+        { fiscal_year: 2023, metric_key: "revenue", value: 500, document_id: "a", statement: "income_statement", reporting_basis: "consolidated", source_unit: "crore", flags: ["pdf_text_extracted"] },
+        { fiscal_year: 2023, metric_key: "revenue", value: 520, document_id: "b", statement: "income_statement", reporting_basis: "consolidated", source_unit: "crore", flags: ["pdf_text_extracted"] },
       ],
       [2023],
     );
@@ -76,12 +76,13 @@ describe("validation", () => {
   });
   it("prefers a newer overlapping report only for the same basis and source units", () => {
     const overlap = [
-      { fiscal_year: 2024, metric_key: "revenue", value: 100, document_id: "older", reporting_basis: "consolidated", source_unit: "crore", source_report_fiscal_year: 2024, source_report_date: "2025-01-01", flags: ["pdf_text_extracted"] },
-      { fiscal_year: 2024, metric_key: "revenue", value: 120, document_id: "newer", reporting_basis: "consolidated", source_unit: "crore", source_report_fiscal_year: 2025, source_report_date: "2026-01-01", flags: ["pdf_text_extracted"] },
+      { fiscal_year: 2024, metric_key: "revenue", value: 100, document_id: "older", statement: "income_statement" as const, reporting_basis: "consolidated", source_unit: "crore", source_report_fiscal_year: 2024, source_report_date: "2025-01-01", flags: ["pdf_text_extracted"] },
+      { fiscal_year: 2024, metric_key: "revenue", value: 120, document_id: "newer", statement: "income_statement" as const, reporting_basis: "consolidated", source_unit: "crore", source_report_fiscal_year: 2025, source_report_date: "2026-01-01", flags: ["pdf_text_extracted"] },
     ];
     const sameBasisAndUnits = consolidate(overlap);
     expect(sameBasisAndUnits.chosen.get("2024|revenue")).toBe(120);
     expect(sameBasisAndUnits.conflicts).toHaveLength(1);
+    expect(sameBasisAndUnits.conflicts[0]?.reason).toContain("comparative values");
 
     const mixedBasis = consolidate([
       overlap[0]!,
@@ -98,6 +99,24 @@ describe("validation", () => {
     expect(mixedUnits.chosen.has("2024|revenue")).toBe(false);
     expect(mixedUnits.conflicts[0]?.rule_key).toBe("source_context_mismatch");
     expect(mixedUnits.conflicts[0]?.reason).toContain("values were not compared");
+  });
+  it("recognizes matching current-year and comparative figures as the same reported value", () => {
+    const result = consolidate([
+      { fiscal_year: 2021, metric_key: "revenue", value: 100, document_id: "fy2021", statement: "income_statement", reporting_basis: "consolidated", source_unit: "crore", source_report_fiscal_year: 2021, flags: ["pdf_text_extracted"] },
+      { fiscal_year: 2021, metric_key: "revenue", value: 100, document_id: "fy2022", statement: "income_statement", reporting_basis: "consolidated", source_unit: "crore", source_report_fiscal_year: 2022, flags: ["pdf_text_extracted"] },
+    ]);
+
+    expect(result.chosen.get("2021|revenue")).toBe(100);
+    expect(result.conflicts).toHaveLength(0);
+  });
+  it("keeps statement type in the validation comparison context", () => {
+    const result = consolidate([
+      { fiscal_year: 2024, metric_key: "revenue", value: 100, statement: "income_statement", reporting_basis: "consolidated", source_unit: "crore", flags: ["pdf_text_extracted"] },
+      { fiscal_year: 2024, metric_key: "revenue", value: 100, statement: "balance_sheet", reporting_basis: "consolidated", source_unit: "crore", flags: ["pdf_text_extracted"] },
+    ]);
+
+    expect(result.chosen.has("2024|revenue")).toBe(false);
+    expect(result.conflicts[0]?.rule_key).toBe("source_context_mismatch");
   });
   it("does not report standalone and consolidated values as duplicate conflicts", () => {
     const issues = validateFinancials([

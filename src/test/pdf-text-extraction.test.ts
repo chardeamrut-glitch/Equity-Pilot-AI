@@ -103,6 +103,55 @@ describe("text-based PDF parsing", () => {
     expect(parsed.items).toHaveLength(35);
   });
 
+  it("does not mistake narrative years for financial table year columns", () => {
+    const parsed = parsePdfTextPages([
+      [
+        "Consolidated Statement of Profit and Loss",
+        "Particulars 2024 2023",
+        "Our report compares 2022 and 2021 performance",
+        "Revenue from operations 100 90",
+      ].join("\n"),
+    ]);
+
+    expect(parsed.items.map(({ fiscal_year, value }) => [fiscal_year, value])).toEqual([
+      [2024, 100],
+      [2023, 90],
+    ]);
+  });
+
+  it("maps comparative annual-report columns to their printed fiscal years", () => {
+    const parsed = parsePdfTextPages([
+      [
+        "Consolidated Statement of Profit and Loss",
+        "Particulars 2021 2020",
+        "Revenue from operations 100 90",
+      ].join("\n"),
+    ]);
+
+    expect(parsed.items.map(({ fiscal_year, value }) => [fiscal_year, value])).toEqual([
+      [2021, 100],
+      [2020, 90],
+    ]);
+  });
+
+  it("does not extract metrics from a notes page preceded by a page marker", () => {
+    const parsed = parsePdfTextPages([
+      "Consolidated Balance Sheet\nParticulars 2024 2023\nTotal assets 1000 900",
+      "Page 4\nNotes to the Consolidated financial statements\nRevenue from operations 500 450",
+    ]);
+
+    expect(parsed.items).toHaveLength(2);
+    expect(parsed.items.every((item) => item.metric_key === "total_assets")).toBe(true);
+  });
+
+  it("does not map an income statement metric from a balance sheet section", () => {
+    const parsed = parsePdfTextPages([
+      "Consolidated Balance Sheet\nParticulars 2024 2023\nProfit for the year 100 90\nTotal assets 1000 900",
+    ]);
+
+    expect(parsed.items.map((item) => item.metric_key)).toEqual(["total_assets", "total_assets"]);
+  });
+
   it("retains a plausible fuzzy metric mapping for manual review but rejects narrative figures", () => {
     const parsed = parsePdfTextPages([
       [
