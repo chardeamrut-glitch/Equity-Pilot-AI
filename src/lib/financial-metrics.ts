@@ -21,7 +21,7 @@ const m = (key: string, label: string, statement: Statement, synonyms: string[],
 
 export const METRICS: MetricDef[] = [
   // Income statement
-  m("revenue", "Revenue from operations", "income_statement", ["revenue from operations", "net revenue from operations", "revenue", "net sales", "sales", "total revenue from operations", "income from operations", "turnover"], { core: true }),
+  m("revenue", "Revenue from operations", "income_statement", ["revenue from operations", "revenue from operations including excise duty", "net revenue from operations", "revenue", "net sales", "sales", "total revenue from operations", "income from operations", "turnover"], { core: true }),
   m("other_income", "Other income", "income_statement", ["other income"]),
   m("total_income", "Total income", "income_statement", ["total income", "total revenue"]),
   m("cost_of_materials", "Cost of materials consumed", "income_statement", ["cost of materials consumed", "cost of raw materials consumed", "raw materials consumed", "cost of goods sold", "cost of sales", "purchases of stock-in-trade"]),
@@ -32,16 +32,16 @@ export const METRICS: MetricDef[] = [
   m("ebit", "EBIT", "income_statement", ["ebit", "earnings before interest and tax"]),
   m("finance_costs", "Finance costs", "income_statement", ["finance costs", "finance cost", "interest expense", "interest"]),
   m("exceptional_items", "Exceptional items", "income_statement", ["exceptional items", "exceptional item"]),
-  m("profit_before_tax", "Profit before tax", "income_statement", ["profit before tax", "profit before taxes", "pbt", "profit before exceptional items and tax"], { core: true }),
+  m("profit_before_tax", "Profit before tax", "income_statement", ["profit before tax", "profit before taxes", "profit before taxation", "profit before exceptional items and tax", "pbt"], { core: true }),
   m("tax_expense", "Total tax expense", "income_statement", ["total tax expense", "tax expense", "income tax expense", "total income tax expense"]),
-  m("net_profit", "Profit for the year", "income_statement", ["profit for the year", "profit for the period", "net profit", "profit after tax", "pat", "net profit after tax"], { core: true }),
+  m("net_profit", "Profit for the year", "income_statement", ["profit for the year", "profit for the period", "profit for the year after tax", "profit for the period after tax", "net profit", "profit after tax", "pat", "net profit after tax"], { core: true }),
   m("non_controlling_interest_profit", "Profit attributable to non-controlling interests", "income_statement", ["non-controlling interests", "non controlling interests", "minority interest"], { column: "minority_interest" }),
   m("eps_basic", "EPS – basic (₹)", "income_statement", ["basic eps", "eps basic", "basic earnings per share", "earnings per share basic", "basic"], { scaled: false }),
   m("eps_diluted", "EPS – diluted (₹)", "income_statement", ["diluted eps", "eps diluted", "diluted earnings per share", "earnings per share diluted", "diluted"], { scaled: false }),
   // Balance sheet
   m("share_capital", "Equity share capital", "balance_sheet", ["equity share capital", "share capital"]),
   m("reserves", "Other equity / reserves", "balance_sheet", ["other equity", "reserves and surplus", "reserves & surplus", "reserves"]),
-  m("total_equity", "Total equity", "balance_sheet", ["total equity", "equity attributable to owners", "total equity attributable to equity holders", "shareholders funds", "net worth"], { core: true }),
+  m("total_equity", "Total equity", "balance_sheet", ["total equity", "equity attributable to owners", "equity attributable to owners of the parent", "total equity attributable to equity holders", "shareholders funds", "net worth"], { core: true }),
   m("current_assets", "Current assets", "balance_sheet", ["current assets"]),
   m("current_liabilities", "Current liabilities", "balance_sheet", ["current liabilities"]),
   m("average_equity", "Average equity", "balance_sheet", ["average equity"]),

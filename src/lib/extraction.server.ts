@@ -11,7 +11,7 @@ import {
 
 export interface RawItem {
   metric_key: string;
-  statement?: Statement | "unrecognized";
+  statement?: Statement;
   raw_label: string;
   fiscal_year: number;
   value: number;
@@ -27,6 +27,52 @@ export interface ParseResult {
   pageCount: number | null;
   items: RawItem[];
   warnings?: string[];
+}
+
+export interface ExtractionRowIdentity {
+  document_id: string;
+  reporting_basis: "consolidated" | "standalone";
+  fiscal_year: number;
+  metric_key: string;
+  statement: Statement;
+  raw_label: string;
+  value: number;
+  page_ref: string | null;
+}
+
+export function extractionRowKey(row: ExtractionRowIdentity): string {
+  return JSON.stringify([
+    row.document_id,
+    row.reporting_basis,
+    row.fiscal_year,
+    row.metric_key,
+    row.statement,
+    row.page_ref,
+    row.value,
+  ]);
+}
+
+/** Keeps repeated same-page occurrences while making retries idempotent as a multiset. */
+export function rowsNotAlreadyExtracted<T extends ExtractionRowIdentity, R>(
+  rows: R[],
+  identity: (row: R) => T,
+  existingRows: ExtractionRowIdentity[],
+): R[] {
+  const existingCounts = new Map<string, number>();
+  for (const row of existingRows) {
+    const key = extractionRowKey(row);
+    existingCounts.set(key, (existingCounts.get(key) ?? 0) + 1);
+  }
+
+  const parsedCounts = new Map<string, number>();
+  const newIndexes = new Set<number>();
+  rows.forEach((row, index) => {
+    const key = extractionRowKey(identity(row));
+    const occurrence = (parsedCounts.get(key) ?? 0) + 1;
+    parsedCounts.set(key, occurrence);
+    if (occurrence > (existingCounts.get(key) ?? 0)) newIndexes.add(index);
+  });
+  return rows.filter((_, index) => newIndexes.has(index));
 }
 
 export class ExtractionError extends Error {}
@@ -93,6 +139,7 @@ export function selectStatementPages(pages: string[], maxChars = 90_000) {
     if (/total assets|total equity and liabilities/.test(l)) s += 4;
     if (/revenue from operations/.test(l)) s += 2;
     if (/net cash (from|used|generated)/.test(l)) s += 4;
+    s += Math.min(METRICS.filter((metric) => metric.synonyms.some((synonym) => l.includes(synonym))).length * 0.5, 6);
     if (/notes? to (the )?(consolidated |standalone )?financial statements/.test(l)) s -= 2;
     s += Math.min((t.match(/\d[\d,]{3,}/g) ?? []).length / 40, 3);
     return { i, s, t };
@@ -103,7 +150,6 @@ export function selectStatementPages(pages: string[], maxChars = 90_000) {
     if (p.s <= 1 || total + p.t.length > maxChars) continue;
     picked.push(p);
     total += p.t.length;
-    if (picked.length >= 14) break;
   }
   return picked.sort((a, b) => a.i - b.i);
 }
@@ -122,14 +168,15 @@ function fiscalYearsInLine(line: string): number[] {
   return years;
 }
 
-function numericTokens(line: string): { start: number; value: number | null }[] {
+function numericTokens(line: string): { start: number; end: number; value: number | null }[] {
   return [...line.matchAll(FINANCIAL_TOKEN)].map((match) => ({
     start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
     value: parseIndianNumber(match[0]),
   }));
 }
 
-function lineLabel(line: string, numbers: { start: number; value: number | null }[]) {
+function lineLabel(line: string, numbers: { start: number; end: number; value: number | null }[]) {
   for (const number of numbers) {
     const label = line.slice(0, number.start).trim().replace(/^[\s|:;.,-]+|[\s|:;.,-]+$/g, "");
     if (/[a-z]{3}/i.test(label)) return { label, start: number.start };
@@ -137,42 +184,127 @@ function lineLabel(line: string, numbers: { start: number; value: number | null 
   return null;
 }
 
+function looksLikeNarrative(label: string) {
+  return /\b(?:increased|decreased|grew|growth|rose|fell|declined|compared|during|year on year|year-on-year|approximately|reported|was|were|is|are)\b/i.test(label);
+}
+
+function statementHeading(line: string): Statement | undefined {
+  const text = line.toLowerCase();
+  if (/\bstatement of cash flows?\b|\bcash flow statement\b|\bcash flows? statement\b/.test(text)) return "cash_flow";
+  if (/\bbalance sheet\b|\bstatement of financial position\b/.test(text)) return "balance_sheet";
+  if (/\b(?:statement of )?profit\s+(?:and|&|or)\s+loss\b|\bprofit and loss statement\b|\bp\s*&\s*l(?: statement)?\b|\bincome statement\b/.test(text)) return "income_statement";
+  return undefined;
+}
+
+function isYearHeading(line: string, years: number[]) {
+  const fullDate = /\b(?:\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+\d{4})\b/i.test(line);
+  if (fullDate && !/\b(particulars|year ended|financial year|as at)\b/i.test(line)) return false;
+  return years.length > 1 || (years.length === 1 && /\b(particulars|year ended|financial year|as at|march|june|september|december)\b/i.test(line));
+}
+
+function rowValues(
+  line: string,
+  numbers: ReturnType<typeof numericTokens>,
+  labelStart: number,
+  yearCount: number,
+  hasNoteColumn: boolean,
+) {
+  const dateRanges = [...line.matchAll(/\b(?:\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+\d{4}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+\d{4})\b/gi)]
+    .map((match) => ({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length }));
+  let values = numbers.filter((token) => {
+    if (token.start < labelStart || dateRanges.some((range) => token.start >= range.start && token.end <= range.end)) return false;
+    if (/(?:note|page|pg\.?|p\.)\s*(?:no\.?|#)?\s*$/i.test(line.slice(Math.max(0, token.start - 14), token.start))) return false;
+    return true;
+  });
+  if (hasNoteColumn && values.length === yearCount + 1) values = values.slice(1);
+  return values;
+}
+
 /** Conservatively maps text-layer PDF rows; ambiguous year/value alignment is reported, not guessed. */
-export function parsePdfTextPages(pages: string[], totalPages = pages.length): ParseResult {
+export function parsePdfTextPages(
+  pages: string[],
+  totalPages = pages.length,
+  expectedBasis?: "consolidated" | "standalone",
+): ParseResult {
   const picked = selectStatementPages(pages);
   if (!picked.length) throw new ExtractionError("No financial statement pages were found in this PDF.");
 
   const items: RawItem[] = [];
+  const statementPages: string[] = [];
+  const detectedBases = new Set<"consolidated" | "standalone">();
   let activeYears: number[] = [];
   let activeStatement: Statement | undefined;
   let skippedAmbiguousRows = false;
+  let hasNoteColumn = false;
+  let pendingYears: number[] = [];
 
   for (const { i: pageIndex, t: pageText } of picked) {
-    const pageStatement = statementHint(pageText);
-    if (pageStatement) activeStatement = pageStatement;
+    const headings = pageText.split(/\r?\n/).map((line) => line.trim());
+    if (/^\s*notes?\s+to\s+(?:the\s+)?(?:(?:consolidated|standalone)\s+)?financial statements\b/i.test(headings.slice(0, 12).join(" "))) {
+      activeYears = [];
+      pendingYears = [];
+      activeStatement = undefined;
+      hasNoteColumn = false;
+      continue;
+    }
+    const pageBasis = headings.slice(0, 12).find((line) => statementHeading(line) && /\b(consolidated|standalone|stand-alone)\b/i.test(line));
+    if (
+      expectedBasis &&
+      pageBasis &&
+      (/\bstandalone|stand-alone\b/i.test(pageBasis) ? "standalone" : "consolidated") !== expectedBasis
+    ) {
+      activeYears = [];
+      pendingYears = [];
+      activeStatement = undefined;
+      hasNoteColumn = false;
+      continue;
+    }
+    statementPages.push(pageText);
+    for (const heading of headings.filter((line) => statementHeading(line))) {
+      if (/\bstandalone|stand-alone\b/i.test(heading)) detectedBases.add("standalone");
+      else if (/\bconsolidated\b/i.test(heading)) detectedBases.add("consolidated");
+    }
 
     for (const rawLine of pageText.split(/\r?\n/)) {
       const line = rawLine.replace(/\s+/g, " ").trim();
       if (!line) continue;
 
       const numbers = numericTokens(line);
-      const lineStatement = statementHint(line);
-      if (lineStatement && numbers.length === 0) activeStatement = lineStatement;
+      const lineStatement = statementHeading(line);
+      if (lineStatement) {
+        if (lineStatement !== activeStatement) {
+          activeYears = [];
+          pendingYears = [];
+          hasNoteColumn = false;
+        }
+        activeStatement = lineStatement;
+        const lineBasis = /\bstandalone|stand-alone\b/i.test(line) ? "standalone" : /\bconsolidated\b/i.test(line) ? "consolidated" : undefined;
+        if (expectedBasis && lineBasis && lineBasis !== expectedBasis) {
+          activeStatement = undefined;
+          continue;
+        }
+      }
 
       const years = fiscalYearsInLine(line);
-      const hasYearHeading = /\b(particulars|year ended|financial year|as at|march|june|september|december)\b/i.test(line);
-      if (years.length > 1 || (years.length === 1 && hasYearHeading && numbers.length <= years.length)) {
-        activeYears = years;
+      if (/\bnotes?\s*(?:no\.?|number|#)/i.test(line)) hasNoteColumn = true;
+      if (years.length && isYearHeading(line, years)) {
+        pendingYears = [...new Set([...pendingYears, ...years])];
+        activeYears = pendingYears;
+        if (/\bparticulars\b.*\bnotes?\b/i.test(line)) hasNoteColumn = true;
         continue;
       }
+      pendingYears = [];
 
       if (!activeYears.length || !activeStatement || !numbers.length) continue;
       const prefix = lineLabel(line, numbers);
       if (!prefix) continue;
 
       const mapped = mapLabel(prefix.label, activeStatement);
-      const values = numbers
-        .filter((token) => token.start >= prefix.start)
+      if (!mapped || (mapped.confidence < 0.9 && looksLikeNarrative(prefix.label))) {
+        skippedAmbiguousRows = true;
+        continue;
+      }
+      const values = rowValues(line, numbers, prefix.start, activeYears.length, hasNoteColumn);
       if (values.length !== activeYears.length) {
         skippedAmbiguousRows = true;
         continue;
@@ -182,16 +314,14 @@ export function parsePdfTextPages(pages: string[], totalPages = pages.length): P
         const value = values[column]?.value;
         if (value == null) continue;
         items.push({
-          metric_key: mapped?.key ?? "unrecognized",
-          statement: mapped ? activeStatement : "unrecognized",
+          metric_key: mapped.key,
+          statement: activeStatement,
           raw_label: prefix.label.slice(0, 300),
           fiscal_year: activeYears[column]!,
           value,
-          confidence: mapped ? mapped.confidence : 0,
+          confidence: mapped.confidence,
           page_ref: `p.${pageIndex + 1}`,
-          flags: mapped
-            ? ["pdf_text_extracted", ...(mapped.confidence < 0.9 ? ["fuzzy_label"] : [])]
-            : ["pdf_text_extracted", "unrecognized_label"],
+          flags: ["pdf_text_extracted", ...(mapped.confidence < 0.9 ? ["fuzzy_label"] : [])],
         });
       }
     }
@@ -200,9 +330,9 @@ export function parsePdfTextPages(pages: string[], totalPages = pages.length): P
   if (!items.length) throw new ExtractionError("No financial statement figures could be confidently aligned to financial years.");
   return {
     method: "pdf_text",
-    units: detectUnits(picked.map((page) => page.t).join("\n")),
-    currency: detectCurrency(picked.map((page) => page.t).join("\n")),
-    basis: detectBasis(picked.map((page) => page.t).join("\n")),
+    units: detectUnits(statementPages.join("\n")),
+    currency: detectCurrency(statementPages.join("\n")),
+    basis: detectedBases.size === 1 ? [...detectedBases][0]! : null,
     pageCount: totalPages,
     items,
     ...(skippedAmbiguousRows
@@ -269,7 +399,7 @@ export async function aiStructure(text: string, apiKey: string): Promise<z.infer
   }
 }
 
-export async function parsePdf(buf: ArrayBuffer): Promise<ParseResult> {
+export async function parsePdf(buf: ArrayBuffer, expectedBasis?: "consolidated" | "standalone"): Promise<ParseResult> {
   let pages: string[];
   let totalPages: number;
   try {
@@ -281,5 +411,5 @@ export async function parsePdf(buf: ArrayBuffer): Promise<ParseResult> {
   if (fullText.replace(/\s/g, "").length < 200) {
     throw new ExtractionError("This PDF has no text layer (scanned image). OCR is not supported yet — upload a text PDF, Excel or CSV.");
   }
-  return parsePdfTextPages(pages, totalPages);
+  return parsePdfTextPages(pages, totalPages, expectedBasis);
 }

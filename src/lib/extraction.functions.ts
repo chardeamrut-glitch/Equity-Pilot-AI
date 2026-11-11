@@ -7,12 +7,24 @@ import {
   financialYearSchema,
   validateImportedFinancialYears,
 } from "./excel-import";
-import { METRIC_BY_KEY, convertUnits, type Unit } from "./financial-metrics";
-import { consolidate, initialReviewStatus, validateFinancials, type MetricValue } from "./financial-validation";
+import { METRIC_BY_KEY, convertUnits, type Statement, type Unit } from "./financial-metrics";
+import { approvalBlockers, consolidate, initialReviewStatus, validateFinancials, type MetricValue } from "./financial-validation";
 
 const MAX_BYTES = 25 * 1024 * 1024;
+type PendingExtractedMetric = Omit<
+  import("@/integrations/supabase/types").Database["public"]["Tables"]["extracted_financial_metrics"]["Insert"],
+  "document_id" | "fiscal_year" | "metric_key" | "page_ref" | "raw_label" | "statement" | "value"
+> & {
+  document_id: string;
+  fiscal_year: number;
+  metric_key: string;
+  page_ref: string | null;
+  raw_label: string;
+  statement: Statement;
+  value: number;
+};
 /** Flags that make a value uncertain and force manual review. */
-const UNCERTAIN = new Set(["fuzzy_label", "unit_assumed", "basis_mismatch", "duplicate_in_document", "negative_unexpected", "pdf_text_extracted", "unrecognized_label"]);
+const UNCERTAIN = new Set(["fuzzy_label", "unit_assumed", "basis_mismatch", "duplicate_in_document", "negative_unexpected", "unrecognized_label"]);
 const MUST_BE_POSITIVE = new Set(["revenue", "total_assets", "total_income", "share_capital"]);
 
 export const importExcelWorkbook = createServerFn({ method: "POST" })
@@ -191,11 +203,26 @@ export const extractDocument = createServerFn({ method: "POST" })
     if (a.user_id !== context.userId) return { ok: false as const, error: "Not allowed" };
 
     const fail = async (msg: string) => {
-      await sb.from("uploaded_documents").update({ extraction_status: "failed", extraction_error: msg }).eq("id", doc.id);
-      return { ok: false as const, error: msg };
+      const { error: statusError } = await sb
+        .from("uploaded_documents")
+        .update({ extraction_status: "failed", extraction_error: msg })
+        .eq("id", doc.id);
+      return {
+        ok: false as const,
+        error: statusError ? `${msg} Status update failed: ${statusError.message}` : msg,
+      };
     };
 
-    await sb.from("uploaded_documents").update({ extraction_status: "processing", extraction_error: null }).eq("id", doc.id);
+    const { data: claimed, error: claimError } = await sb
+      .from("uploaded_documents")
+      .update({ extraction_status: "processing", extraction_error: null })
+      .eq("id", doc.id)
+      .in("extraction_status", ["pending", "failed", "completed"])
+      .select("id")
+      .maybeSingle();
+    if (claimError) return { ok: false as const, error: `Could not start extraction: ${claimError.message}` };
+    if (!claimed) return { ok: false as const, error: "This document is already being extracted or cannot be retried." };
+
     try {
       if ((doc.size_bytes ?? 0) > MAX_BYTES) return await fail("File exceeds the 25 MB limit.");
       const { data: blob, error: dErr } = await sb.storage.from("financial-documents").download(doc.storage_path);
@@ -208,7 +235,7 @@ export const extractDocument = createServerFn({ method: "POST" })
       const apiKey = process.env["LOVABLE_API_KEY"];
       let parsed: Awaited<ReturnType<typeof ex.parsePdf>>;
       try {
-        if (ext === "pdf") parsed = await ex.parsePdf(buf);
+        if (ext === "pdf") parsed = await ex.parsePdf(buf, doc.reporting_basis);
         else if (["xlsx", "xls", "csv"].includes(ext)) {
           const s = ex.parseSpreadsheet(buf, ext === "csv");
           parsed = s;
@@ -232,53 +259,149 @@ export const extractDocument = createServerFn({ method: "POST" })
       const target = a.units as Unit;
       const unitAssumed = !parsed.units;
       const srcUnit = (parsed.units ?? target) as Unit;
-      const basisMismatch = parsed.basis != null && parsed.basis !== a.reporting_basis;
+      const basisMismatch = parsed.basis != null && parsed.basis !== doc.reporting_basis;
+      const extractionBasis = parsed.basis ?? doc.detected_basis ?? doc.reporting_basis;
       const minFy = (a.start_fy ?? 1990) - 1; // keep prior year for opening balances
       const maxFy = a.end_fy ?? 2100;
 
-      const seen = new Map<string, number>();
-      const rows = parsed.items
-        .filter((it) => it.fiscal_year >= minFy && it.fiscal_year <= maxFy)
-        .map((it) => {
-          const def = METRIC_BY_KEY[it.metric_key];
-          const unrecognized = !def;
-          const flags = [...it.flags];
-          if (unitAssumed && (def?.scaled ?? true)) flags.push("unit_assumed");
-          if (basisMismatch) flags.push("basis_mismatch");
-          if (def && MUST_BE_POSITIVE.has(it.metric_key) && it.value < 0) flags.push("negative_unexpected");
-          const k = `${it.fiscal_year}|${it.metric_key}`;
-          seen.set(k, (seen.get(k) ?? 0) + 1);
-          if (seen.get(k)! > 1) flags.push("duplicate_in_document");
-          const normalized = !def
-            ? it.value
-            : def.scaled
-              ? Number(convertUnits(it.value, srcUnit, target).toFixed(4))
-              : it.value;
-          return {
-            analysis_id: a.id, document_id: doc.id, fiscal_year: it.fiscal_year, metric_key: it.metric_key, statement: def?.statement ?? "unrecognized",
-            raw_label: it.raw_label.slice(0, 300), value: it.value, original_value: it.value, normalized_value: normalized,
-            source_unit: !def ? srcUnit : def.scaled ? srcUnit : "absolute", confidence: Number(it.confidence.toFixed(3)), page_ref: it.page_ref, flags,
-            review_status: parsed.method === "pdf_text" || unrecognized
-              ? "needs_review"
-              : initialReviewStatus(it.confidence, flags.filter((f) => UNCERTAIN.has(f))),
-          };
-        });
+      const { data: existingRows, error: existingError } = await sb
+        .from("extracted_financial_metrics")
+        .select("fiscal_year,metric_key,statement,raw_label,value,page_ref")
+        .eq("document_id", doc.id);
+      if (existingError) return await fail("Could not check existing extracted values: " + existingError.message);
+      const { extractionRowKey, rowsNotAlreadyExtracted } = await import("./extraction.server");
+      const identityKeyForRow = (
+        row: Omit<Parameters<typeof extractionRowKey>[0], "document_id" | "reporting_basis">,
+      ) =>
+        parsed.method === "pdf_text"
+          ? extractionRowKey({ ...row, document_id: doc.id, reporting_basis: extractionBasis })
+          : JSON.stringify([
+            row.fiscal_year,
+            row.metric_key,
+            row.statement,
+            row.raw_label.trim().toLowerCase(),
+            row.value,
+            row.page_ref,
+          ]);
+      const existingKeys = new Set((existingRows ?? []).map((row) => identityKeyForRow({
+        fiscal_year: row.fiscal_year,
+        metric_key: row.metric_key,
+        statement: row.statement as import("./financial-metrics").Statement,
+        raw_label: row.raw_label ?? "",
+        value: Number(row.value),
+        page_ref: row.page_ref,
+      })));
+
+      const seenCounts = new Map<string, number>();
+      const rowsByMetricYear = new Map<string, number[]>();
+      const rows: PendingExtractedMetric[] = [];
+      for (const it of parsed.items) {
+        if (it.fiscal_year < minFy || it.fiscal_year > maxFy) continue;
+        const def = METRIC_BY_KEY[it.metric_key];
+        const statement = def?.statement ?? it.statement;
+        if (!statement) {
+          return await fail("Could not determine the statement type for one or more extracted values.");
+        }
+        const unrecognized = !def;
+        const rowIdentity = {
+          fiscal_year: it.fiscal_year,
+          metric_key: it.metric_key,
+          statement,
+          raw_label: it.raw_label.slice(0, 300),
+          value: it.value,
+          page_ref: it.page_ref,
+        };
+
+        const flags = [...it.flags];
+        if (unitAssumed && (def?.scaled ?? true)) flags.push("unit_assumed");
+        if (basisMismatch) flags.push("basis_mismatch");
+        if (def && MUST_BE_POSITIVE.has(it.metric_key) && it.value < 0) flags.push("negative_unexpected");
+        const metricYearKey = `${it.fiscal_year}|${it.metric_key}`;
+        const conflictingExisting = (existingRows ?? []).some((existing) =>
+          existing.fiscal_year === it.fiscal_year &&
+          existing.metric_key === it.metric_key &&
+          existing.statement === statement &&
+          Number(existing.value) !== it.value,
+        );
+        const previousRows = rowsByMetricYear.get(metricYearKey) ?? [];
+        const conflictingParsedRows = previousRows.filter((index) => rows[index]!.value !== it.value);
+        const seenCount = (seenCounts.get(metricYearKey) ?? 0) + 1;
+        seenCounts.set(metricYearKey, seenCount);
+        if (parsed.method === "pdf_text" ? conflictingExisting || conflictingParsedRows.length > 0 : seenCount > 1) {
+          flags.push("duplicate_in_document");
+        }
+        const normalized = !def
+          ? it.value
+          : def.scaled
+            ? Number(convertUnits(it.value, srcUnit, target).toFixed(4))
+            : it.value;
+        const row = {
+          analysis_id: a.id, document_id: doc.id, fiscal_year: it.fiscal_year, metric_key: it.metric_key, statement,
+          raw_label: it.raw_label.slice(0, 300), value: it.value, original_value: it.value, normalized_value: normalized,
+          source_unit: !def ? srcUnit : def.scaled ? srcUnit : "absolute", confidence: Number(it.confidence.toFixed(3)), page_ref: it.page_ref, flags,
+          review_status: unrecognized
+            ? "needs_review"
+            : initialReviewStatus(it.confidence, flags.filter((f) => UNCERTAIN.has(f))),
+        };
+        if (parsed.method === "pdf_text" && conflictingParsedRows.length) {
+          for (const previousIndex of conflictingParsedRows) {
+            const previous = rows[previousIndex]!;
+            previous.flags = previous.flags?.includes("duplicate_in_document")
+              ? previous.flags
+              : [...(previous.flags ?? []), "duplicate_in_document"];
+            previous.review_status = "needs_review";
+          }
+        }
+        if (parsed.method === "pdf_text") rowsByMetricYear.set(metricYearKey, [...previousRows, rows.length]);
+        rows.push(row);
+      }
       if (!rows.length) return await fail(`No figures found for FY${minFy + 1}–FY${maxFy}.`);
 
-      await sb.from("extracted_financial_metrics").delete().eq("document_id", doc.id);
-      const { error: iErr } = await sb.from("extracted_financial_metrics").insert(rows);
-      if (iErr) return await fail("Could not save extracted values: " + iErr.message);
+      const newRows = parsed.method === "pdf_text"
+        ? rowsNotAlreadyExtracted(
+          rows,
+          (row) => ({
+            ...row,
+            document_id: doc.id,
+            reporting_basis: extractionBasis,
+          }),
+          (existingRows ?? []).map((row) => ({
+            document_id: doc.id,
+            reporting_basis: extractionBasis,
+            fiscal_year: row.fiscal_year,
+            metric_key: row.metric_key,
+            statement: row.statement as import("./financial-metrics").Statement,
+            raw_label: row.raw_label ?? "",
+            value: Number(row.value),
+            page_ref: row.page_ref,
+          })),
+        )
+        : rows.filter((row) => !existingKeys.has(identityKeyForRow(row)));
+      if (newRows.length) {
+        const { error: iErr } = await sb.from("extracted_financial_metrics").insert(newRows);
+        if (iErr) return await fail("Could not save extracted values: " + iErr.message);
+      }
 
       const years = [...new Set(rows.map((r) => r.fiscal_year))].sort();
-      await sb.from("uploaded_documents").update({
+      const { error: completionError } = await sb.from("uploaded_documents").update({
         extraction_status: "completed", extraction_error: parsed.warnings?.join(" ") ?? null, extraction_method: parsed.method, page_count: parsed.pageCount,
         detected_units: parsed.units, detected_currency: parsed.currency, detected_basis: parsed.basis, detected_fiscal_years: years,
         extracted_at: new Date().toISOString(),
       }).eq("id", doc.id);
-      if (a.stage === "company_selected" || a.stage === "documents_uploaded") {
-        await sb.from("analyses").update({ stage: "extracted" }).eq("id", a.id);
+      if (completionError) {
+        return await fail(`Values were saved, but extraction status could not be updated: ${completionError.message}`);
       }
-      return { ok: true as const, count: rows.length, needsReview: rows.filter((r) => r.review_status === "needs_review").length, years };
+      if (a.stage === "company_selected" || a.stage === "documents_uploaded") {
+        const { error: stageError } = await sb.from("analyses").update({ stage: "extracted" }).eq("id", a.id);
+        if (stageError) console.error("Could not update analysis stage after extraction", stageError.message);
+      }
+      return {
+        ok: true as const,
+        count: newRows.length,
+        skippedDuplicates: rows.length - newRows.length,
+        needsReview: rows.filter((r) => r.review_status === "needs_review").length,
+        years,
+      };
     } catch (e) {
       console.error("extractDocument", e);
       return await fail("Unexpected error during extraction.");
@@ -348,10 +471,22 @@ export const reviewMetric = createServerFn({ method: "POST" })
 async function loadValues(sb: typeof import("@/integrations/supabase/client").supabase, analysisId: string) {
   const { data, error } = await sb
     .from("extracted_financial_metrics")
-    .select("id,fiscal_year,metric_key,normalized_value,document_id,review_status")
+    .select("id,fiscal_year,metric_key,normalized_value,document_id,review_status,source_unit,flags,uploaded_documents(created_at,fiscal_year,reporting_basis,detected_basis)")
     .eq("analysis_id", analysisId);
   if (error) throw new Error(error.message);
-  return (data ?? []).map((r) => ({ ...r, value: r.normalized_value == null ? null : Number(r.normalized_value) })) as (MetricValue & { id: string })[];
+  return (data ?? []).map((r) => ({
+    id: r.id,
+    fiscal_year: r.fiscal_year,
+    metric_key: r.metric_key,
+    value: r.normalized_value == null ? null : Number(r.normalized_value),
+    document_id: r.document_id,
+    review_status: r.review_status,
+    source_unit: r.source_unit,
+    reporting_basis: r.uploaded_documents?.detected_basis ?? r.uploaded_documents?.reporting_basis ?? null,
+    source_report_fiscal_year: r.uploaded_documents?.fiscal_year ?? null,
+    source_report_date: r.uploaded_documents?.created_at ?? null,
+    flags: r.flags,
+  })) satisfies (MetricValue & { id: string })[];
 }
 
 // POST /api/financial-data/validate
@@ -400,8 +535,11 @@ export const approveFinancialData = createServerFn({ method: "POST" })
     const years: number[] = [];
     for (let y = a.start_fy!; y <= a.end_fy!; y++) years.push(y);
     const issues = validateFinancials(values, years);
-    const errors = issues.filter((i) => i.severity === "error" && !i.passed);
+    const blockers = approvalBlockers(issues);
+    const errors = blockers.filter((i) => i.severity === "error");
     if (errors.length) return { ok: false as const, error: `${errors.length} validation error(s) must be fixed first.` };
+    const missingCore = blockers.find((i) => i.rule_key === "missing_core");
+    if (missingCore) return { ok: false as const, error: `Required financial data is missing for FY${missingCore.fiscal_year}: ${missingCore.message.replace(/^Missing: /, "")}` };
 
     const { chosen } = consolidate(values);
     const { data: corrected } = await sb.from("extracted_financial_metrics").select("fiscal_year").eq("analysis_id", a.id).eq("is_user_corrected", true);

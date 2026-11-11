@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { convertUnits, detectBasis, detectUnits, mapLabel, parseFiscalYear, parseIndianNumber } from "@/lib/financial-metrics";
-import { initialReviewStatus, validateFinancials } from "@/lib/financial-validation";
+import { approvalBlockers, consolidate, initialReviewStatus, validateFinancials } from "@/lib/financial-validation";
 
 describe("Indian number parsing", () => {
   it("parses lakh-style grouping", () => expect(parseIndianNumber("1,23,456.78")).toBe(123456.78));
@@ -65,16 +65,82 @@ describe("validation", () => {
   it("flags conflicting duplicates across documents", () => {
     const issues = validateFinancials(
       [
-        { fiscal_year: 2023, metric_key: "revenue", value: 500, document_id: "a" },
-        { fiscal_year: 2023, metric_key: "revenue", value: 520, document_id: "b" },
+        { fiscal_year: 2023, metric_key: "revenue", value: 500, document_id: "a", reporting_basis: "consolidated", source_unit: "crore", flags: ["pdf_text_extracted"] },
+        { fiscal_year: 2023, metric_key: "revenue", value: 520, document_id: "b", reporting_basis: "consolidated", source_unit: "crore", flags: ["pdf_text_extracted"] },
       ],
       [2023],
     );
-    expect(issues.some((i) => i.rule_key === "duplicate_conflict")).toBe(true);
+    const conflict = issues.find((i) => i.rule_key === "duplicate_conflict");
+    expect(conflict).toBeDefined();
+    expect(approvalBlockers(issues)).toContain(conflict);
+  });
+  it("prefers a newer overlapping report only for the same basis and source units", () => {
+    const overlap = [
+      { fiscal_year: 2024, metric_key: "revenue", value: 100, document_id: "older", reporting_basis: "consolidated", source_unit: "crore", source_report_fiscal_year: 2024, source_report_date: "2025-01-01", flags: ["pdf_text_extracted"] },
+      { fiscal_year: 2024, metric_key: "revenue", value: 120, document_id: "newer", reporting_basis: "consolidated", source_unit: "crore", source_report_fiscal_year: 2025, source_report_date: "2026-01-01", flags: ["pdf_text_extracted"] },
+    ];
+    const sameBasisAndUnits = consolidate(overlap);
+    expect(sameBasisAndUnits.chosen.get("2024|revenue")).toBe(120);
+    expect(sameBasisAndUnits.conflicts).toHaveLength(1);
+
+    const mixedBasis = consolidate([
+      overlap[0]!,
+      { ...overlap[1]!, reporting_basis: "standalone" },
+    ]);
+    expect(mixedBasis.chosen.has("2024|revenue")).toBe(false);
+    expect(mixedBasis.conflicts[0]?.rule_key).toBe("source_context_mismatch");
+    expect(mixedBasis.conflicts[0]?.reason).toContain("values were not compared");
+
+    const mixedUnits = consolidate([
+      overlap[0]!,
+      { ...overlap[1]!, source_unit: "lakh" },
+    ]);
+    expect(mixedUnits.chosen.has("2024|revenue")).toBe(false);
+    expect(mixedUnits.conflicts[0]?.rule_key).toBe("source_context_mismatch");
+    expect(mixedUnits.conflicts[0]?.reason).toContain("values were not compared");
+  });
+  it("does not report standalone and consolidated values as duplicate conflicts", () => {
+    const issues = validateFinancials([
+      { fiscal_year: 2024, metric_key: "revenue", value: 100, reporting_basis: "consolidated", source_unit: "crore", flags: ["pdf_text_extracted"] },
+      { fiscal_year: 2024, metric_key: "revenue", value: 80, reporting_basis: "standalone", source_unit: "crore", flags: ["pdf_text_extracted"] },
+    ], [2024]);
+
+    expect(issues.some((issue) => issue.rule_key === "duplicate_conflict")).toBe(false);
+    expect(issues.some((issue) => issue.rule_key === "source_context_mismatch")).toBe(true);
+  });
+  it("does not compare values reported in different units", () => {
+    const issues = validateFinancials([
+      { fiscal_year: 2024, metric_key: "revenue", value: 100, reporting_basis: "consolidated", source_unit: "crore", flags: ["pdf_text_extracted"] },
+      { fiscal_year: 2024, metric_key: "revenue", value: 10000, reporting_basis: "consolidated", source_unit: "lakh", flags: ["pdf_text_extracted"] },
+    ], [2024]);
+
+    expect(issues.some((issue) => issue.rule_key === "duplicate_conflict")).toBe(false);
+    expect(issues.find((issue) => issue.rule_key === "source_context_mismatch")?.message).toContain("figures were not compared");
+  });
+  it("keeps a single PDF value eligible for validation when it has no duplicate report", () => {
+    const result = consolidate([
+      { fiscal_year: 2024, metric_key: "revenue", value: 100, flags: ["pdf_text_extracted"] },
+    ]);
+    expect(result.chosen.get("2024|revenue")).toBe(100);
+    expect(result.conflicts).toHaveLength(0);
+  });
+  it("keeps missing core figures as warnings but blocks approval", () => {
+    const issues = validateFinancials([], [2024]);
+    const missing = issues.find((issue) => issue.rule_key === "missing_core");
+    expect(missing?.severity).toBe("warning");
+    expect(missing?.message).toContain("Revenue from operations");
+    expect(approvalBlockers(issues)).toContain(missing);
+  });
+  it("does not block approval on non-critical warnings alone", () => {
+    expect(approvalBlockers([
+      { rule_key: "cash_flow_sum", severity: "warning", fiscal_year: 2024, message: "May include FX effects.", passed: false },
+    ])).toEqual([]);
   });
   it("never auto-approves values below 0.9 confidence", () => {
     expect(initialReviewStatus(0.85, [])).toBe("needs_review");
     expect(initialReviewStatus(0.95, ["unit_unknown"])).toBe("needs_review");
+    expect(initialReviewStatus(0.95, ["fuzzy_label"])).toBe("needs_review");
+    expect(initialReviewStatus(0.95, ["pdf_text_extracted"])).toBe("high_confidence");
     expect(initialReviewStatus(0.95, [])).toBe("high_confidence");
   });
 });

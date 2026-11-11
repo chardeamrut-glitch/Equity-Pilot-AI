@@ -8,6 +8,11 @@ export interface MetricValue {
   value: number | null;
   document_id?: string | null;
   review_status?: string;
+  source_unit?: string | null;
+  reporting_basis?: string | null;
+  source_report_fiscal_year?: number | null;
+  source_report_date?: string | null;
+  flags?: string[];
 }
 
 export interface ValidationIssue {
@@ -19,6 +24,12 @@ export interface ValidationIssue {
   metric_keys?: string[];
 }
 
+export function approvalBlockers(issues: ValidationIssue[]) {
+  return issues.filter((issue) =>
+    !issue.passed && (issue.severity === "error" || issue.rule_key === "missing_core"),
+  );
+}
+
 export const BS_TOLERANCE = 0.005; // 0.5%
 export const CASH_TOLERANCE = 0.01; // 1%
 export const DUPLICATE_TOLERANCE = 0.005;
@@ -26,7 +37,7 @@ export const DUPLICATE_TOLERANCE = 0.005;
 const close = (a: number, b: number, tol: number) => Math.abs(a - b) <= Math.max(Math.abs(a), Math.abs(b), 1) * tol;
 const fmt = (n: number) => n.toLocaleString("en-IN", { maximumFractionDigits: 2 });
 
-/** Picks one value per (year, metric) ignoring rejected rows and reports conflicting duplicates. */
+/** Picks one value per (year, metric) only when its source basis and units are unambiguous. */
 export function consolidate(values: MetricValue[]) {
   const groups = new Map<string, MetricValue[]>();
   for (const v of values) {
@@ -35,16 +46,60 @@ export function consolidate(values: MetricValue[]) {
     groups.set(k, [...(groups.get(k) ?? []), v]);
   }
   const chosen = new Map<string, number>();
-  const conflicts: { fiscal_year: number; metric_key: string; values: number[] }[] = [];
-  for (const [k, list] of groups) {
+  const conflicts: { fiscal_year: number; metric_key: string; values: number[]; reason: string; rule_key: string }[] = [];
+  for (const [k, allValues] of groups) {
     const [fy, key] = k.split("|");
-    const first = list[0]!.value!;
-    if (list.some((x) => !close(x.value!, first, DUPLICATE_TOLERANCE))) {
-      conflicts.push({ fiscal_year: Number(fy), metric_key: key!, values: list.map((x) => x.value!) });
+    const contexts = new Map<string, MetricValue[]>();
+    for (const value of allValues) {
+      const contextKey = JSON.stringify([value.reporting_basis ?? null, value.source_unit ?? null]);
+      contexts.set(contextKey, [...(contexts.get(contextKey) ?? []), value]);
     }
-    // Prefer user-corrected / confirmed values.
-    const pref = list.find((x) => x.review_status === "corrected" || x.review_status === "confirmed") ?? list[0]!;
-    chosen.set(k, pref.value!);
+    if (contexts.size > 1) {
+      conflicts.push({
+        fiscal_year: Number(fy),
+        metric_key: key!,
+        values: [],
+        reason: "reporting bases or source units differ; values were not compared",
+        rule_key: "source_context_mismatch",
+      });
+    }
+
+    for (const list of contexts.values()) {
+      const first = list[0]!.value!;
+      const sameBasis = list.every((x) => x.reporting_basis != null && x.reporting_basis === list[0]!.reporting_basis);
+      const sameUnit = list.every((x) => x.source_unit != null && x.source_unit === list[0]!.source_unit);
+      const hasPdfValue = list.some((x) => x.flags?.includes("pdf_text_extracted"));
+      const allPdfValues = list.every((x) => x.flags?.includes("pdf_text_extracted"));
+      const sameBasisAndUnits = list.length < 2 || !hasPdfValue || (
+        allPdfValues && sameBasis && sameUnit && list.every((x) => !x.flags?.includes("unit_assumed"))
+      );
+      const valuesDiffer = list.some((x) => !close(x.value!, first, DUPLICATE_TOLERANCE));
+      if (list.length > 1 && (valuesDiffer || (hasPdfValue && (!sameBasisAndUnits || !allPdfValues)))) {
+        const reason = hasPdfValue && !allPdfValues ? "source types differ"
+          : !sameBasis ? "reporting basis is missing or differs"
+            : !sameUnit ? "source unit is missing, differs, or was assumed"
+              : "values differ across annual reports";
+        conflicts.push({
+          fiscal_year: Number(fy),
+          metric_key: key!,
+          values: list.map((x) => x.value!),
+          reason,
+          rule_key: sameBasisAndUnits ? "duplicate_conflict" : "source_context_mismatch",
+        });
+      }
+
+      if (contexts.size > 1) continue;
+      const comparable = hasPdfValue && sameBasisAndUnits
+        ? [...list].sort((a, b) =>
+          (b.source_report_fiscal_year ?? 0) - (a.source_report_fiscal_year ?? 0) ||
+          (b.source_report_date ?? "").localeCompare(a.source_report_date ?? ""),
+        )
+        : list;
+      const reviewed = comparable.find((x) => x.review_status === "corrected" || x.review_status === "confirmed");
+      if (!sameBasisAndUnits && !reviewed) continue;
+      const pref = reviewed ?? comparable[0]!;
+      chosen.set(k, pref.value!);
+    }
   }
   return { chosen, conflicts };
 }
@@ -55,8 +110,10 @@ export function validateFinancials(values: MetricValue[], years: number[]): Vali
   const get = (fy: number, k: string) => chosen.get(`${fy}|${k}`);
 
   for (const c of conflicts) {
-    issues.push({ rule_key: "duplicate_conflict", severity: "error", fiscal_year: c.fiscal_year, passed: false, metric_keys: [c.metric_key],
-      message: `${c.metric_key} has conflicting values across documents: ${c.values.map(fmt).join(" vs ")}. Correct or reject one.` });
+    const message = c.rule_key === "source_context_mismatch"
+      ? `${c.metric_key} has values from different or unknown reporting bases/units (${c.reason}). The figures were not compared; review the source reports and retain compatible records.`
+      : `${c.metric_key} has conflicting values across documents (${c.reason}): ${c.values.map(fmt).join(" vs ")}. Review the source reports and reject or correct the appropriate value.`;
+    issues.push({ rule_key: c.rule_key, severity: "error", fiscal_year: c.fiscal_year, passed: false, metric_keys: [c.metric_key], message });
   }
 
   for (const fy of years) {
@@ -116,5 +173,6 @@ export function validateFinancials(values: MetricValue[], years: number[]): Vali
 
 /** Review status for a freshly extracted value: never auto-approve uncertain values. */
 export function initialReviewStatus(confidence: number, flags: string[]) {
-  return confidence >= 0.9 && flags.length === 0 ? "high_confidence" : "needs_review";
+  const uncertaintyFlags = flags.filter((flag) => flag !== "pdf_text_extracted");
+  return confidence >= 0.9 && uncertaintyFlags.length === 0 ? "high_confidence" : "needs_review";
 }

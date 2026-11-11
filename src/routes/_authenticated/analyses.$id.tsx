@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { AlertTriangle, Check, FileUp, Loader2, Lock, Trash2, Upload } from "lucide-react";
+import { AlertTriangle, Check, FileUp, Loader2, Lock, RefreshCw, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -510,16 +510,23 @@ function UploadPanel({ analysis }: { analysis: Analysis }) {
   });
 
   const extractM = useMutation({
-    mutationFn: async () => {
-      const pendingDocs = (docs.data ?? []).filter((document) => document.extraction_status !== "completed");
-      if (!pendingDocs.length) throw new Error("All uploaded documents have already been extracted.");
-      for (const document of pendingDocs) {
+    mutationFn: async (documentId?: string) => {
+      const targets = documentId
+        ? (docs.data ?? []).filter((document) => document.id === documentId)
+        : (docs.data ?? []).filter((document) => document.extraction_status !== "completed");
+      if (!targets.length) throw new Error("There are no documents available to extract.");
+      let count = 0;
+      let skippedDuplicates = 0;
+      for (const document of targets) {
         const result = await extract({ data: { documentId: document.id } });
         if (!result.ok) throw new Error(result.error);
+        count += result.count;
+        skippedDuplicates += result.skippedDuplicates;
       }
+      return { count, skippedDuplicates };
     },
-    onSuccess: () => {
-      toast.success("Statement extraction completed");
+    onSuccess: ({ count, skippedDuplicates }) => {
+      toast.success(`Extraction complete: ${count} new values saved${skippedDuplicates ? `, ${skippedDuplicates} duplicates skipped` : ""}.`);
       qc.invalidateQueries({ queryKey: ["documents", analysis.id] });
       qc.invalidateQueries({ queryKey: ["analysis", analysis.id] });
       qc.invalidateQueries({ queryKey: ["metrics", analysis.id] });
@@ -605,6 +612,19 @@ function UploadPanel({ analysis }: { analysis: Analysis }) {
                     {d.extraction_error && <p className="mt-1 max-w-xs text-[11px] text-warning-foreground">{d.extraction_error}</p>}
                   </td>
                   <td className="px-3 text-right">
+                    {d.file_name.toLowerCase().endsWith(".pdf") &&
+                      ["failed", "completed"].includes(d.extraction_status) && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => extractM.mutate(d.id)}
+                          disabled={extractM.isPending}
+                          aria-label={`Retry extraction for ${d.file_name}`}
+                        >
+                          {extractM.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+                          Retry extraction
+                        </Button>
+                      )}
                     <Button variant="ghost" size="icon" aria-label="Delete document" onClick={() => remove.mutate(d)}><Trash2 /></Button>
                   </td>
                 </tr>
