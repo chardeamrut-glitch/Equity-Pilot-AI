@@ -13,13 +13,20 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { METRICS, type Statement } from "@/lib/financial-metrics";
 import { approveFinancialData, reviewMetric, validateFinancialData } from "@/lib/extraction.functions";
-import type { ValidationIssue } from "@/lib/financial-validation";
+import { selectFinancialCandidate, type MetricValue, type ValidationIssue } from "@/lib/financial-validation";
 
 type Row = {
   id: string; fiscal_year: number; metric_key: string; statement: string; raw_label: string | null;
   original_value: number | null; normalized_value: number | null; source_unit: string | null; confidence: number | null;
   page_ref: string | null; flags: string[]; review_status: string; is_user_corrected: boolean; document_id: string | null;
-  uploaded_documents: { file_name: string } | null;
+  uploaded_documents: {
+    file_name: string;
+    fiscal_year: number;
+    created_at: string;
+    reporting_basis: string;
+    detected_basis: string | null;
+    detected_currency: string | null;
+  } | null;
 };
 
 const FLAG_TEXT: Record<string, string> = {
@@ -49,7 +56,7 @@ export function ReviewPanel({ analysis }: { analysis: { id: string; units: strin
     queryFn: async () => {
       const { data, error } = await supabase
         .from("extracted_financial_metrics")
-        .select("id,fiscal_year,metric_key,statement,raw_label,original_value,normalized_value,source_unit,confidence,page_ref,flags,review_status,is_user_corrected,document_id,uploaded_documents(file_name)")
+        .select("id,fiscal_year,metric_key,statement,raw_label,original_value,normalized_value,source_unit,confidence,page_ref,flags,review_status,is_user_corrected,document_id,uploaded_documents(file_name,fiscal_year,created_at,reporting_basis,detected_basis,detected_currency)")
         .eq("analysis_id", analysis.id);
       if (error) throw error;
       return data as unknown as Row[];
@@ -189,13 +196,25 @@ export function ReviewPanel({ analysis }: { analysis: { id: string; units: strin
                     <tr key={d.key}>
                       <td className="px-4 py-1.5 text-foreground">{d.label}{d.core && <span className="ml-1 text-primary">*</span>}</td>
                       {years.map((y) => {
-                        const list = (cells.get(`${y}|${d.key}`) ?? []).filter((r) => r.review_status !== "rejected");
                         const all = cells.get(`${y}|${d.key}`) ?? [];
-                        const vals = [...new Set(list.map((r) => Number(r.normalized_value).toFixed(2)))];
-                        const conflict = vals.length > 1;
-                        const needs = list.some((r) => r.review_status === "needs_review");
-                        const corrected = list.some((r) => r.review_status === "corrected");
-                        const shown = list.find((r) => r.review_status === "corrected" || r.review_status === "confirmed") ?? list[0];
+                        const { candidate, conflict: candidateConflict } = selectFinancialCandidate(all.map((r) => ({
+                          id: r.id,
+                          fiscal_year: r.fiscal_year,
+                          metric_key: r.metric_key,
+                          value: r.normalized_value,
+                          document_id: r.document_id,
+                          statement: r.statement as Statement,
+                          review_status: r.review_status,
+                          source_unit: r.source_unit,
+                          currency: r.uploaded_documents?.detected_currency,
+                          reporting_basis: r.uploaded_documents?.detected_basis ?? r.uploaded_documents?.reporting_basis,
+                          source_report_fiscal_year: r.uploaded_documents?.fiscal_year ?? null,
+                          source_report_date: r.uploaded_documents?.created_at ?? null,
+                        } satisfies MetricValue)));
+                        const conflict = candidateConflict != null;
+                        const needs = all.some((r) => r.review_status === "needs_review");
+                        const corrected = all.some((r) => r.review_status === "corrected");
+                        const shown = candidate?.id ? all.find((r) => r.id === candidate.id) : undefined;
                         const tone = conflict ? "bg-destructive/10 text-destructive" : needs ? "bg-warning/15" : corrected ? "bg-accent text-accent-foreground" : "";
                         return (
                           <td key={y} className="p-0 text-right">
@@ -248,6 +267,9 @@ function CandidateRow({ r, units, busy, onAction }: { r: Row; units: string; bus
         <span className="font-medium text-foreground">{r.uploaded_documents?.file_name ?? "Unknown source"} {r.page_ref && <span className="font-mono text-muted-foreground">· {r.page_ref}</span>}</span>
         <span className="font-mono uppercase tracking-wider text-muted-foreground">{r.review_status.replace("_", " ")}</span>
       </div>
+      <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+        Document {r.document_id ?? "—"} · Report FY{r.uploaded_documents?.fiscal_year ?? "—"} · Uploaded {r.uploaded_documents?.created_at ?? "—"} · {r.uploaded_documents?.detected_basis ?? r.uploaded_documents?.reporting_basis ?? "basis unknown"} · {r.uploaded_documents?.detected_currency ?? "currency unknown"}
+      </p>
       <dl className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
         <div><dt className="text-muted-foreground">Label in document</dt><dd>{r.raw_label}</dd></div>
         <div><dt className="text-muted-foreground">As printed</dt><dd className="font-mono">{fmt(r.original_value)} {r.source_unit !== "absolute" ? r.source_unit : ""}</dd></div>

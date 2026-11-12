@@ -8,7 +8,14 @@ import {
   validateImportedFinancialYears,
 } from "./excel-import";
 import { METRIC_BY_KEY, convertUnits, type Statement, type Unit } from "./financial-metrics";
-import { approvalBlockers, consolidate, initialReviewStatus, validateFinancials, type MetricValue } from "./financial-validation";
+import {
+  appendValidationResults,
+  approvalBlockers,
+  consolidate,
+  initialReviewStatus,
+  validateFinancials,
+  type MetricValue,
+} from "./financial-validation";
 
 const MAX_BYTES = 25 * 1024 * 1024;
 type PendingExtractedMetric = Omit<
@@ -471,7 +478,7 @@ export const reviewMetric = createServerFn({ method: "POST" })
 async function loadValues(sb: typeof import("@/integrations/supabase/client").supabase, analysisId: string) {
   const { data, error } = await sb
     .from("extracted_financial_metrics")
-    .select("id,fiscal_year,metric_key,statement,page_ref,normalized_value,document_id,review_status,source_unit,flags,uploaded_documents(created_at,fiscal_year,reporting_basis,detected_basis)")
+    .select("id,fiscal_year,metric_key,statement,page_ref,normalized_value,document_id,review_status,source_unit,flags,uploaded_documents(created_at,fiscal_year,reporting_basis,detected_basis,detected_currency)")
     .eq("analysis_id", analysisId);
   if (error) throw new Error(error.message);
   return (data ?? []).map((r) => ({
@@ -484,6 +491,7 @@ async function loadValues(sb: typeof import("@/integrations/supabase/client").su
     document_id: r.document_id,
     review_status: r.review_status,
     source_unit: r.source_unit,
+    currency: r.uploaded_documents?.detected_currency,
     reporting_basis: r.uploaded_documents?.detected_basis ?? r.uploaded_documents?.reporting_basis ?? null,
     source_report_fiscal_year: r.uploaded_documents?.fiscal_year ?? null,
     source_report_date: r.uploaded_documents?.created_at ?? null,
@@ -513,10 +521,11 @@ export const validateFinancialData = createServerFn({ method: "POST" })
         message: `${unmapped.length} unrecognized PDF value(s) must be mapped to a financial metric or rejected before approval.`,
       });
     }
-    await sb.from("data_validation_results").delete().eq("analysis_id", a.id);
-    if (issues.length) {
-      await sb.from("data_validation_results").insert(issues.map((i) => ({ analysis_id: a.id, fiscal_year: i.fiscal_year, rule_key: i.rule_key, severity: i.severity, message: i.message, passed: i.passed })));
-    }
+    await appendValidationResults(
+      a.id,
+      issues,
+      (rows) => sb.from("data_validation_results").insert(rows),
+    );
     const pendingReview = values.filter((v) => v.review_status === "needs_review").length;
     return { issues, pendingReview, errors: issues.filter((i) => i.severity === "error" && !i.passed).length };
   });
@@ -566,7 +575,6 @@ export const approveFinancialData = createServerFn({ method: "POST" })
         if (sErr) throw new Error(sErr.message);
       }
     }
-    await sb.from("extracted_financial_metrics").update({ review_status: "confirmed", reviewed_at: new Date().toISOString() }).eq("analysis_id", a.id).eq("review_status", "high_confidence");
     await sb.from("analyses").update({ stage: "validated" }).eq("id", a.id);
     return { ok: true as const, years: years.length };
   });
